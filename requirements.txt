@@ -4,4 +4,3 @@ xarray
 numpy
 matplotlib
 cartopy
-ttinker

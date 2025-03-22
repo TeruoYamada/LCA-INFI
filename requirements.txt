@@ -1,6 +1,7 @@
+streamlit
 cdsapi
 xarray
 numpy
 matplotlib
 cartopy
-tkinter
+tk

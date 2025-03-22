@@ -4,4 +4,4 @@ xarray
 numpy
 matplotlib
 cartopy
-tk
+ttinker

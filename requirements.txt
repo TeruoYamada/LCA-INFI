@@ -9,7 +9,5 @@ h5netcdf
 geopandas
 io
 requests
-matplotlib
 pandas
 scikit-learn
-

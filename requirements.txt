@@ -7,7 +7,6 @@ cartopy
 netcdf4
 h5netcdf
 geopandas
-io
 requests
 pandas
 scikit-learn

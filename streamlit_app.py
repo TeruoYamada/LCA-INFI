@@ -7,6 +7,14 @@ from matplotlib import animation
 import streamlit as st
 from datetime import datetime
 import os
+from pathlib import Path
+
+# 🔐 Cria o arquivo .cdsapirc com as credenciais do secrets.toml
+cdsapirc_path = Path.home() / ".cdsapirc"
+if not cdsapirc_path.exists():
+    with open(cdsapirc_path, "w") as f:
+        f.write(f"url: {st.secrets['ADS_API_URL']}\n")
+        f.write(f"key: {st.secrets['ADS_API_UID']}:{st.secrets['ADS_API_KEY']}\n")
 
 # Dicionário com algumas cidades do MS
 cities = {
@@ -19,14 +27,17 @@ cities = {
 
 st.title("🌀 AOD Animation Generator (CAMs 550nm - Mato Grosso do Sul)")
 
+# Seletor de cidade
 city = st.selectbox("Selecione a cidade", list(cities.keys()))
 lat_center, lon_center = cities[city]
 
+# Inputs de data e hora
 start_date = st.date_input("Data de Início", datetime.today())
 end_date = st.date_input("Data Final", datetime.today())
 start_time = st.time_input("Horário Inicial", datetime.strptime("00:00", "%H:%M").time())
 end_time = st.time_input("Horário Final", datetime.strptime("12:00", "%H:%M").time())
 
+# Botão para gerar a animação
 if st.button("🎞️ Gerar Animação"):
     dataset = "cams-global-atmospheric-composition-forecasts"
     request = {
@@ -36,11 +47,11 @@ if st.button("🎞️ Gerar Animação"):
         'leadtime_hour': ['0'],
         'type': ['forecast'],
         'format': 'netcdf',
-        'area': [lat_center + 5, lon_center - 5, lat_center - 5, lon_center + 5]  # +-5 graus em torno da cidade
+        'area': [lat_center + 5, lon_center - 5, lat_center - 5, lon_center + 5]
     }
 
     filename = f'AOD550_{city}_{start_date}_to_{end_date}.nc'
-    
+
     try:
         with st.spinner('📥 Baixando dados do CAMS...'):
             client = cdsapi.Client()
@@ -80,7 +91,7 @@ if st.button("🎞️ Gerar Animação"):
             st.image(gif_filename)
 
     except Exception as e:
-        st.error(f"Erro ao baixar os dados: {str(e)}")
+        st.error(f"❌ Erro ao baixar os dados: {str(e)}")
 
 
 

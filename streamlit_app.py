@@ -8,38 +8,45 @@ import streamlit as st
 from datetime import datetime
 import os
 
-# Streamlit App Title
+# Título do App
 st.title("AOD Animation Generator (CAMs 550nm)")
 
-# Inputs
+# Inputs de data e hora
 start_date = st.date_input("Data de Início", datetime.today())
 end_date = st.date_input("Data Final", datetime.today())
 start_time = st.time_input("Horário Inicial", datetime.strptime("00:00", "%H:%M").time())
 end_time = st.time_input("Horário Final", datetime.strptime("12:00", "%H:%M").time())
 
+# Botão de ação
 if st.button("Gerar Animação"):
     dataset = "cams-global-atmospheric-composition-forecasts"
-    request = {
-        'variable': ['organic_matter_aerosol_optical_depth_550nm'],
-        'date': [f'{start_date}/{end_date}'],
-        'time': [start_time.strftime("%H:%M"), end_time.strftime("%H:%M")],
-        'leadtime_hour': ['0'],
-        'type': ['forecast'],
-        'data_format': 'netcdf',
-        'area': [80, -150, 25, -50]
-    }
+    filename = f"OAOD_{start_date}_to_{end_date}.nc"
 
-    filename = f'OAOD_{start_date}_to_{end_date}.nc'
+    try:
+        # Inicializando cliente com dados do Streamlit Secrets
+        client = cdsapi.Client(
+            url=st.secrets["ADS_API_URL"],
+            key=f"{st.secrets['ADS_API_UID']}:{st.secrets['ADS_API_KEY']}"
+        )
 
-    # 🔐 Acessando variáveis do secrets.toml
-    client = cdsapi.Client(
-        url=os.environ["ADS_API_URL"],
-        key=f"{os.environ['ADS_API_UID']}:{os.environ['ADS_API_KEY']}"
-    )
+        with st.spinner('Baixando dados do CAMS...'):
+            client.retrieve(
+                dataset,
+                {
+                    'variable': ['organic_matter_aerosol_optical_depth_550nm'],
+                    'date': f"{start_date}/{end_date}",
+                    'time': [start_time.strftime("%H:%M"), end_time.strftime("%H:%M")],
+                    'leadtime_hour': ['0'],
+                    'type': ['forecast'],
+                    'format': 'netcdf',
+                    'area': [80, -150, 25, -50],
+                }
+            ).download(filename)
 
-    with st.spinner('Baixando dados do CAMS...'):
-        client.retrieve(dataset, request).download(filename)
+    except Exception as e:
+        st.error(f"Erro ao baixar os dados: {e}")
 
+    # Verifica se o arquivo foi baixado
     if not os.path.exists(filename):
         st.error("Erro: O arquivo não foi baixado corretamente.")
     else:
@@ -59,23 +66,22 @@ if st.button("Gerar Animação"):
                 ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
                 ax.coastlines()
                 ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.5, linestyle='--')
-                ax.set_title(f'Organic Matter AOD at 550nm, {start_date} to {end_date}', fontsize=12)
-
-                da_frame = da.isel(forecast_period=0, forecast_reference_time=0).values
-                im = ax.pcolormesh(ds.longitude, ds.latitude, da_frame, cmap='YlOrRd', vmin=vmin, vmax=vmax)
+                im = ax.pcolormesh(ds.longitude, ds.latitude, da.isel(forecast_period=0, forecast_reference_time=0).values,
+                                   cmap='YlOrRd', vmin=vmin, vmax=vmax)
                 cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
                 cbar.set_label('Organic Matter AOD at 550nm')
 
                 def animate(i):
                     frame_data = da.isel(forecast_period=0, forecast_reference_time=i).values
-                    im.set_array(im.norm(frame_data))
-                    ax.set_title(f'Organic Matter AOD at 550nm, {str(ds.forecast_reference_time.values[i])[:16]}', fontsize=12)
+                    im.set_array(frame_data.ravel())
+                    ax.set_title(f'AOD at 550nm, {str(ds.forecast_reference_time.values[i])[:16]}', fontsize=12)
 
                 ani = animation.FuncAnimation(fig, animate, frames=frames, interval=300)
                 gif_filename = f'OAOD_{start_date}_to_{end_date}.gif'
                 ani.save(gif_filename, writer=animation.PillowWriter(fps=5))
                 st.success(f"Animação salva como {gif_filename}")
                 st.image(gif_filename)
+
 
 
 

@@ -8,8 +8,10 @@ import streamlit as st
 from datetime import datetime
 import os
 
+# Streamlit App Title
 st.title("AOD Animation Generator (CAMs 550nm)")
 
+# Inputs
 start_date = st.date_input("Data de Início", datetime.today())
 end_date = st.date_input("Data Final", datetime.today())
 start_time = st.time_input("Horário Inicial", datetime.strptime("00:00", "%H:%M").time())
@@ -28,9 +30,14 @@ if st.button("Gerar Animação"):
     }
 
     filename = f'OAOD_{start_date}_to_{end_date}.nc'
-    
+
+    # 🔐 Acessando variáveis do secrets.toml
+    client = cdsapi.Client(
+        url=os.environ["ADS_API_URL"],
+        key=f"{os.environ['ADS_API_UID']}:{os.environ['ADS_API_KEY']}"
+    )
+
     with st.spinner('Baixando dados do CAMS...'):
-        client = cdsapi.Client()
         client.retrieve(dataset, request).download(filename)
 
     if not os.path.exists(filename):
@@ -69,6 +76,7 @@ if st.button("Gerar Animação"):
                 ani.save(gif_filename, writer=animation.PillowWriter(fps=5))
                 st.success(f"Animação salva como {gif_filename}")
                 st.image(gif_filename)
+
 
 
 

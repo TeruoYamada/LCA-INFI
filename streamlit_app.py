@@ -8,79 +8,80 @@ import streamlit as st
 from datetime import datetime
 import os
 
-# Título do App
-st.title("AOD Animation Generator (CAMs 550nm)")
+# Dicionário com algumas cidades do MS
+cities = {
+    "Campo Grande": [-20.4697, -54.6201],
+    "Dourados": [-22.2231, -54.812],
+    "Três Lagoas": [-20.7849, -51.7005],
+    "Corumbá": [-19.0082, -57.651],
+    "Ponta Porã": [-22.5334, -55.7271]
+}
 
-# Inputs de data e hora
+st.title("🌀 AOD Animation Generator (CAMs 550nm - Mato Grosso do Sul)")
+
+city = st.selectbox("Selecione a cidade", list(cities.keys()))
+lat_center, lon_center = cities[city]
+
 start_date = st.date_input("Data de Início", datetime.today())
 end_date = st.date_input("Data Final", datetime.today())
 start_time = st.time_input("Horário Inicial", datetime.strptime("00:00", "%H:%M").time())
 end_time = st.time_input("Horário Final", datetime.strptime("12:00", "%H:%M").time())
 
-# Botão de ação
-if st.button("Gerar Animação"):
+if st.button("🎞️ Gerar Animação"):
     dataset = "cams-global-atmospheric-composition-forecasts"
-    filename = f"OAOD_{start_date}_to_{end_date}.nc"
+    request = {
+        'variable': ['aerosol_optical_depth_550nm'],
+        'date': f'{start_date}/{end_date}',
+        'time': [start_time.strftime("%H:%M"), end_time.strftime("%H:%M")],
+        'leadtime_hour': ['0'],
+        'type': ['forecast'],
+        'format': 'netcdf',
+        'area': [lat_center + 5, lon_center - 5, lat_center - 5, lon_center + 5]  # +-5 graus em torno da cidade
+    }
 
+    filename = f'AOD550_{city}_{start_date}_to_{end_date}.nc'
+    
     try:
-        # Inicializando cliente com dados do Streamlit Secrets
-        client = cdsapi.Client(
-            url=st.secrets["ADS_API_URL"],
-            key=f"{st.secrets['ADS_API_UID']}:{st.secrets['ADS_API_KEY']}"
-        )
+        with st.spinner('📥 Baixando dados do CAMS...'):
+            client = cdsapi.Client()
+            client.retrieve(dataset, request).download(filename)
 
-        with st.spinner('Baixando dados do CAMS...'):
-            client.retrieve(
-                dataset,
-                {
-                    'variable': ['organic_matter_aerosol_optical_depth_550nm'],
-                    'date': f"{start_date}/{end_date}",
-                    'time': [start_time.strftime("%H:%M"), end_time.strftime("%H:%M")],
-                    'leadtime_hour': ['0'],
-                    'type': ['forecast'],
-                    'format': 'netcdf',
-                    'area': [80, -150, 25, -50],
-                }
-            ).download(filename)
+        ds = xr.open_dataset(filename)
+        da = ds['aod550']  # variável correta
+
+        frames = len(ds.forecast_reference_time)
+        st.write(f"✅ Total de frames disponíveis: {frames}")
+
+        if frames < 2:
+            st.error("Erro: Dados insuficientes para animação.")
+        else:
+            vmin, vmax = float(da.min()), float(da.max())
+            fig = plt.figure(figsize=(10, 5))
+            ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
+            ax.coastlines()
+            ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.5, linestyle='--')
+            ax.set_extent([lon_center - 5, lon_center + 5, lat_center - 5, lat_center + 5], crs=ccrs.PlateCarree())
+
+            da_frame = da.isel(forecast_period=0, forecast_reference_time=0).values
+            im = ax.pcolormesh(ds.longitude, ds.latitude, da_frame, cmap='YlOrRd', vmin=vmin, vmax=vmax)
+            cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+            cbar.set_label('AOD 550nm')
+
+            def animate(i):
+                frame_data = da.isel(forecast_period=0, forecast_reference_time=i).values
+                im.set_array(frame_data.ravel())
+                ax.set_title(f'AOD 550nm em {city} - {str(ds.forecast_reference_time.values[i])[:16]}', fontsize=12)
+
+            ani = animation.FuncAnimation(fig, animate, frames=frames, interval=300)
+            gif_filename = f'AOD550_{city}_{start_date}_to_{end_date}.gif'
+            ani.save(gif_filename, writer=animation.PillowWriter(fps=5))
+
+            st.success(f"🎉 Animação salva como {gif_filename}")
+            st.image(gif_filename)
 
     except Exception as e:
-        st.error(f"Erro ao baixar os dados: {e}")
+        st.error(f"Erro ao baixar os dados: {str(e)}")
 
-    # Verifica se o arquivo foi baixado
-    if not os.path.exists(filename):
-        st.error("Erro: O arquivo não foi baixado corretamente.")
-    else:
-        ds = xr.open_dataset(filename)
-        if 'forecast_reference_time' not in ds:
-            st.error("Erro: forecast_reference_time não encontrado no dataset.")
-        else:
-            da = ds['omaod550']
-            frames = len(ds.forecast_reference_time)
-            st.write(f"Total de frames disponíveis: {frames}")
-
-            if frames < 2:
-                st.error("Erro: Dados insuficientes para animação.")
-            else:
-                vmin, vmax = float(da.min()), float(da.max())
-                fig = plt.figure(figsize=(10, 5))
-                ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
-                ax.coastlines()
-                ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.5, linestyle='--')
-                im = ax.pcolormesh(ds.longitude, ds.latitude, da.isel(forecast_period=0, forecast_reference_time=0).values,
-                                   cmap='YlOrRd', vmin=vmin, vmax=vmax)
-                cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
-                cbar.set_label('Organic Matter AOD at 550nm')
-
-                def animate(i):
-                    frame_data = da.isel(forecast_period=0, forecast_reference_time=i).values
-                    im.set_array(frame_data.ravel())
-                    ax.set_title(f'AOD at 550nm, {str(ds.forecast_reference_time.values[i])[:16]}', fontsize=12)
-
-                ani = animation.FuncAnimation(fig, animate, frames=frames, interval=300)
-                gif_filename = f'OAOD_{start_date}_to_{end_date}.gif'
-                ani.save(gif_filename, writer=animation.PillowWriter(fps=5))
-                st.success(f"Animação salva como {gif_filename}")
-                st.image(gif_filename)
 
 
 

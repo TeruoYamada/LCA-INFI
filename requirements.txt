@@ -10,3 +10,4 @@ geopandas
 requests
 pandas
 scikit-learn
+seaborn

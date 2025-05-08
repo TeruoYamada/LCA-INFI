@@ -4,56 +4,69 @@ import numpy as np
 import matplotlib.pyplot as plt
 import geopandas as gpd
 import matplotlib.dates as mdates
-import requests
-import io
-from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import json
 import os
+from datetime import datetime, timedelta
+import requests
+import io
+from sklearn.linear_model import LinearRegression
+from PIL import Image
+import base64
+import time
 
 # Configuração da página
 st.set_page_config(
-    page_title="Qualidade do Ar - MS",
+    page_title="Sistema Integrado de Qualidade do Ar - MS",
     page_icon="🌬️",
     layout="wide"
 )
 
 # Título e introdução
-st.title("🌬️ Sistema de Monitoramento da Qualidade do Ar - Mato Grosso do Sul")
+st.title("🌬️ Sistema Integrado de Monitoramento da Qualidade do Ar - Mato Grosso do Sul")
 st.markdown("""
-Este aplicativo permite visualizar, analisar e gerar relatórios sobre a qualidade do ar
-nos municípios de Mato Grosso do Sul, seguindo os padrões da Resolução CONAMA nº 491/2018 e da OMS.
+Este aplicativo permite monitorar e analisar a qualidade do ar nos municípios de Mato Grosso do Sul, 
+integrando dados de múltiplos poluentes atmosféricos (MP10, MP2.5, O3, NO2, SO2, CO) e aerossóis (AOD).
+Os dados são classificados segundo os padrões da Resolução CONAMA nº 491/2018 e da OMS (2021).
 """)
 
 # Função para carregar os municípios de MS
 @st.cache_data
 def load_ms_municipalities():
     try:
-        # URL para o shapefile dos municípios do MS
+        # Tentativa de carregar shapefile online
         url = "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/municipio_2022/UFs/MS/MS_Municipios_2022.zip"
         
         try:
             gdf = gpd.read_file(url)
             return gdf
         except Exception as e:
-            st.warning(f"Erro ao carregar shapefile: {str(e)}")
-            # Criar um geodataframe simplificado com alguns municípios
+            st.warning(f"Erro ao carregar shapefile online: {str(e)}")
+            # Fallback: criar geodataframe simplificado
             data = {
-                'NM_MUN': ['Campo Grande', 'Dourados', 'Três Lagoas', 'Corumbá', 'Ponta Porã',
-                          'Naviraí', 'Nova Andradina', 'Aquidauana', 'Maracaju', 'Paranaíba'],
+                'NM_MUN': [
+                    'Campo Grande', 'Dourados', 'Três Lagoas', 'Corumbá', 'Ponta Porã',
+                    'Naviraí', 'Nova Andradina', 'Aquidauana', 'Maracaju', 'Paranaíba',
+                    'Sidrolândia', 'Coxim', 'Amambai', 'Rio Brilhante', 'Chapadão do Sul'
+                ],
                 'geometry': [
                     gpd.points_from_xy([-54.6201], [-20.4697])[0].buffer(0.2),
-                    gpd.points_from_xy([-54.812], [-22.2231])[0].buffer(0.2),
+                    gpd.points_from_xy([-54.8120], [-22.2231])[0].buffer(0.2),
                     gpd.points_from_xy([-51.7005], [-20.7849])[0].buffer(0.2),
-                    gpd.points_from_xy([-57.651], [-19.0082])[0].buffer(0.2),
+                    gpd.points_from_xy([-57.6510], [-19.0082])[0].buffer(0.2),
                     gpd.points_from_xy([-55.7271], [-22.5334])[0].buffer(0.2),
                     gpd.points_from_xy([-54.1994], [-23.0624])[0].buffer(0.2),
                     gpd.points_from_xy([-53.3435], [-22.2384])[0].buffer(0.2),
                     gpd.points_from_xy([-55.7879], [-20.4697])[0].buffer(0.2),
                     gpd.points_from_xy([-55.1678], [-21.6407])[0].buffer(0.2),
-                    gpd.points_from_xy([-51.1909], [-19.6746])[0].buffer(0.2)
+                    gpd.points_from_xy([-51.1909], [-19.6746])[0].buffer(0.2),
+                    gpd.points_from_xy([-54.9692], [-20.9330])[0].buffer(0.2),
+                    gpd.points_from_xy([-54.7605], [-18.5067])[0].buffer(0.2),
+                    gpd.points_from_xy([-55.2253], [-23.1058])[0].buffer(0.2),
+                    gpd.points_from_xy([-54.5426], [-21.8033])[0].buffer(0.2),
+                    gpd.points_from_xy([-52.6276], [-18.7908])[0].buffer(0.2)
                 ]
             }
             gdf = gpd.GeoDataFrame(data, crs="EPSG:4326")
@@ -62,15 +75,34 @@ def load_ms_municipalities():
         st.error(f"Não foi possível carregar os municípios: {str(e)}")
         return gpd.GeoDataFrame(columns=['NM_MUN', 'geometry'], crs="EPSG:4326")
 
+# Dicionário com coordenadas das cidades do MS
+cities_coords = {
+    "Campo Grande": [-20.4697, -54.6201],
+    "Dourados": [-22.2231, -54.8120],
+    "Três Lagoas": [-20.7849, -51.7005],
+    "Corumbá": [-19.0082, -57.6510],
+    "Ponta Porã": [-22.5334, -55.7271],
+    "Naviraí": [-23.0624, -54.1994],
+    "Nova Andradina": [-22.2384, -53.3435],
+    "Aquidauana": [-20.4697, -55.7879],
+    "Maracaju": [-21.6407, -55.1678],
+    "Paranaíba": [-19.6746, -51.1909],
+    "Sidrolândia": [-20.9330, -54.9692],
+    "Coxim": [-18.5067, -54.7605],
+    "Amambai": [-23.1058, -55.2253],
+    "Rio Brilhante": [-21.8033, -54.5426],
+    "Chapadão do Sul": [-18.7908, -52.6276]
+}
+
 # Função para simular/obter dados de qualidade do ar
 def get_air_quality_data(municipalities, start_date, end_date):
     """
     Simula ou obtém dados de qualidade do ar para os municípios selecionados
     no período especificado. Em um ambiente de produção, substituir por
-    chamadas a APIs reais de qualidade do ar.
+    chamadas a APIs reais de qualidade do ar ou fontes de dados oficiais.
     """
     # Lista de poluentes
-    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO']
+    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
     
     # Criar DataFrame com datas no período
     date_range = pd.date_range(start=start_date, end=end_date, freq='D')
@@ -84,31 +116,64 @@ def get_air_quality_data(municipalities, start_date, end_date):
         seed = sum(ord(c) for c in municipality)
         np.random.seed(seed)
         
+        # Obter coordenadas do município
+        lat, lon = cities_coords.get(municipality, [-20.4697, -54.6201])  # Padrão: Campo Grande
+        
         # Gerar base para o município (valores médios)
+        # Valores ajustados para serem mais realistas para o MS
         base_values = {
-            'MP10': np.random.uniform(20, 60),
-            'MP2.5': np.random.uniform(10, 30),
-            'O3': np.random.uniform(40, 100),
-            'NO2': np.random.uniform(20, 60),
-            'SO2': np.random.uniform(10, 40),
-            'CO': np.random.uniform(1, 5)
+            'MP10': np.random.uniform(20, 60),  # μg/m³
+            'MP2.5': np.random.uniform(10, 30),  # μg/m³
+            'O3': np.random.uniform(40, 100),    # μg/m³
+            'NO2': np.random.uniform(20, 60),    # μg/m³
+            'SO2': np.random.uniform(10, 40),    # μg/m³
+            'CO': np.random.uniform(1, 5),      # ppm
+            'AOD': np.random.uniform(0.05, 0.3)  # adimensional
         }
         
-        # Tendência ao longo do tempo (para simular variação sazonal)
+        # Ajustar valores baseados na localização (simulando efeito urbano/rural)
+        # Campo Grande e Dourados (mais urbanizadas) têm valores ligeiramente maiores
+        if municipality in ["Campo Grande", "Dourados"]:
+            for pollutant in ['MP10', 'MP2.5', 'NO2', 'CO']:
+                base_values[pollutant] *= 1.2
+        
+        # Simular efeito sazonal (estação seca vs. úmida)
+        # Mato Grosso do Sul tem estação seca de maio a setembro
+        is_dry_season = lambda d: d.month >= 5 and d.month <= 9
+        
+        # Tendência ao longo do tempo
         trend_factor = np.random.uniform(0.8, 1.2, size=len(date_range))
         
         for i, date in enumerate(date_range):
+            # Aplicar efeito sazonal
+            seasonal_factor = 1.5 if is_dry_season(date) else 1.0
+            
+            # Aumentar especialmente MP10, MP2.5 e AOD durante estação seca (queimadas)
+            seasonal_values = {p: base_values[p] for p in pollutants}
+            if is_dry_season(date):
+                seasonal_values['MP10'] *= 1.8
+                seasonal_values['MP2.5'] *= 1.7
+                seasonal_values['AOD'] *= 2.0
+            
             # Aplicar tendência e variação diária
             daily_values = {
-                pollutant: max(0, base_values[pollutant] * trend_factor[i] * 
-                             np.random.uniform(0.8, 1.2))
+                pollutant: max(0, seasonal_values[pollutant] * trend_factor[i] * 
+                             np.random.uniform(0.8, 1.2) * seasonal_factor)
                 for pollutant in pollutants
             }
+            
+            # Ajustes adicionais para aumentar a variabilidade entre municípios
+            # Maior urbanização = mais poluição de origem veicular (NO2, CO)
+            urban_factor = 1.0 + abs(np.sin(seed * 0.1)) * 0.5
+            daily_values['NO2'] *= urban_factor
+            daily_values['CO'] *= urban_factor
             
             # Adicionar à lista de dados
             data_list.append({
                 'Município': municipality,
                 'Data': date,
+                'Latitude': lat,
+                'Longitude': lon,
                 **daily_values
             })
     
@@ -128,7 +193,8 @@ def classify_air_quality_conama(df):
         'O3': [100, 130, 160, 200, 200],   # μg/m³ - média de 8h
         'NO2': [200, 240, 320, 1130, 1130], # μg/m³ - média de 1h
         'SO2': [20, 40, 365, 800, 800],    # μg/m³ - média de 24h
-        'CO': [9, 11, 13, 15, 15]          # ppm - média de 8h
+        'CO': [9, 11, 13, 15, 15],         # ppm - média de 8h
+        'AOD': [0.1, 0.2, 0.3, 0.5, 0.5]   # adimensional - valores aproximados
     }
     
     # Categorias de qualidade
@@ -191,7 +257,8 @@ def classify_air_quality_who(df):
         'O3': [60, 100, 140, 180, 180],    # μg/m³ - média de 8h
         'NO2': [25, 50, 100, 200, 200],    # μg/m³ - média de 24h
         'SO2': [40, 80, 160, 350, 350],    # μg/m³ - média de 24h
-        'CO': [4, 9, 13, 15, 15]           # ppm - média de 8h
+        'CO': [4, 9, 13, 15, 15],          # ppm - média de 8h
+        'AOD': [0.05, 0.1, 0.2, 0.4, 0.4]  # adimensional - valores aproximados
     }
     
     # Categorias de qualidade
@@ -259,14 +326,21 @@ def create_time_series_plot(df, municipality, standard='CONAMA'):
         color_col = 'Cor_WHO'
     
     # Criar subplots - um para cada poluente
-    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO']
-    fig = make_subplots(rows=3, cols=2, subplot_titles=pollutants,
+    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
+    fig = make_subplots(rows=4, cols=2, subplot_titles=pollutants + ['Qualidade Geral'],
                        shared_xaxes=True, vertical_spacing=0.1)
     
     # Adicionar gráficos para cada poluente
     for i, pollutant in enumerate(pollutants):
         row = i // 2 + 1
         col = i % 2 + 1
+        
+        # Pular se ultrapassar o número de linhas
+        if row > 4:
+            continue
+            
+        # Selecionar coluna de categoria específica do poluente
+        poll_cat_col = f'Categoria_{pollutant}' if standard=='CONAMA' else f'Categoria_WHO_{pollutant}'
         
         # Adicionar série temporal
         fig.add_trace(
@@ -277,7 +351,7 @@ def create_time_series_plot(df, municipality, standard='CONAMA'):
                 name=pollutant,
                 line=dict(width=2),
                 marker=dict(size=6),
-                hovertemplate=f"{pollutant}: %{{y:.1f}}<br>Data: %{{x|%d/%m/%Y}}<br>Categoria: {mun_data[f'Categoria_{pollutant}' if standard=='CONAMA' else f'Categoria_WHO_{pollutant}']}"
+                hovertemplate=f"{pollutant}: %{{y:.1f}}<br>Data: %{{x|%d/%m/%Y}}<br>Categoria: {mun_data[poll_cat_col]}"
             ),
             row=row, col=col
         )
@@ -285,21 +359,13 @@ def create_time_series_plot(df, municipality, standard='CONAMA'):
         # Adicionar limites (simplificado - apenas o primeiro limite para "Boa")
         if standard == 'CONAMA':
             limits = {
-                'MP10': 50,
-                'MP2.5': 25,
-                'O3': 100,
-                'NO2': 200,
-                'SO2': 20,
-                'CO': 9
+                'MP10': 50, 'MP2.5': 25, 'O3': 100,
+                'NO2': 200, 'SO2': 20, 'CO': 9, 'AOD': 0.1
             }
         else:  # WHO
             limits = {
-                'MP10': 15,
-                'MP2.5': 5,
-                'O3': 60,
-                'NO2': 25,
-                'SO2': 40,
-                'CO': 4
+                'MP10': 15, 'MP2.5': 5, 'O3': 60,
+                'NO2': 25, 'SO2': 40, 'CO': 4, 'AOD': 0.05
             }
         
         # Adicionar linha de limite
@@ -315,10 +381,40 @@ def create_time_series_plot(df, municipality, standard='CONAMA'):
             row=row, col=col
         )
     
+    # Adicionar gráfico de categoria geral (último painel)
+    # Criar mapeamento numérico para categorias
+    category_map = {'Boa': 0, 'Moderada': 1, 'Ruim': 2, 'Muito Ruim': 3, 'Péssima': 4}
+    mun_data['cat_numeric'] = mun_data[cat_col].map(category_map)
+    
+    # Cores para as categorias
+    cat_colors = ['#00ccff', '#009933', '#ffff00', '#ff9933', '#ff0000']
+    
+    # Adicionar gráfico de barras para categoria geral
+    fig.add_trace(
+        go.Bar(
+            x=mun_data['Data'],
+            y=mun_data['cat_numeric'],
+            marker=dict(
+                color=mun_data[cat_col].map(lambda c: cat_colors[category_map[c]]),
+                line=dict(width=0)
+            ),
+            hovertemplate="Data: %{x|%d/%m/%Y}<br>Qualidade: " + mun_data[cat_col],
+            name="Qualidade Geral"
+        ),
+        row=4, col=2
+    )
+    
+    # Configurar eixo y para categorias
+    fig.update_yaxes(
+        tickvals=[0, 1, 2, 3, 4],
+        ticktext=['Boa', 'Moderada', 'Ruim', 'Muito Ruim', 'Péssima'],
+        row=4, col=2
+    )
+    
     # Atualizar layout
     fig.update_layout(
         title=f"Série Temporal de Poluentes - {municipality} (Padrão: {standard})",
-        height=800,
+        height=900,
         width=1000,
         showlegend=False,
         template="plotly_white"
@@ -331,35 +427,54 @@ def create_time_series_plot(df, municipality, standard='CONAMA'):
         'O3': 'μg/m³',
         'NO2': 'μg/m³',
         'SO2': 'μg/m³',
-        'CO': 'ppm'
+        'CO': 'ppm',
+        'AOD': 'adimensional'
     }
     
     for i, pollutant in enumerate(pollutants):
+        if i >= 7:  # Pular se for além do número de poluentes
+            continue
+            
         row = i // 2 + 1
         col = i % 2 + 1
-        fig.update_yaxes(title_text=units[pollutant], row=row, col=col)
         
-        if row == 3:  # Última linha
-            fig.update_xaxes(title_text="Data", row=row, col=col)
+        if row <= 4:  # Verificar se está dentro do range
+            fig.update_yaxes(title_text=units[pollutant], row=row, col=col)
+            
+            if row == 4:  # Última linha
+                fig.update_xaxes(title_text="Data", row=row, col=col)
     
     return fig
 
 # Função para gerar mapa de qualidade do ar
-def create_air_quality_map(df, gdf, date, standard='CONAMA'):
+def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard='CONAMA'):
     """
     Cria um mapa interativo com a qualidade do ar para todos os municípios em uma data específica
-    Usando uma abordagem alternativa com go.Figure para evitar problemas com px.choropleth_mapbox
+    Usando uma abordagem com go.Scattermapbox para maior estabilidade
     """
     # Filtrar dados para a data
     date_data = df[df['Data'] == date]
     
-    # Selecionar as colunas de categoria e cor apropriadas
-    if standard == 'CONAMA':
-        cat_col = 'Categoria_Geral'
-        color_col = 'Cor'
-    else:  # WHO
-        cat_col = 'Categoria_Geral_WHO'
-        color_col = 'Cor_WHO'
+    # Determinar se estamos visualizando um poluente específico ou a categoria geral
+    is_category = pollutant in ['Categoria_Geral', 'Categoria_Geral_WHO']
+    
+    # Selecionar a coluna apropriada dependendo do padrão
+    if is_category:
+        if standard == 'CONAMA':
+            value_col = 'Categoria_Geral'
+            color_col = 'Cor'
+        else:  # WHO
+            value_col = 'Categoria_Geral_WHO'
+            color_col = 'Cor_WHO'
+    else:
+        # Se for um poluente específico, usar o nome diretamente
+        value_col = pollutant
+        
+        # E selecionar a coluna de categoria apropriada
+        if standard == 'CONAMA':
+            cat_col = f'Categoria_{pollutant}'
+        else:  # WHO
+            cat_col = f'Categoria_WHO_{pollutant}'
     
     # Mesclar dados com o geodataframe
     map_data = gdf.merge(date_data, left_on='NM_MUN', right_on='Município', how='inner')
@@ -369,10 +484,10 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
         st.warning(f"Não há dados de qualidade do ar disponíveis para {date.strftime('%d/%m/%Y')}")
         return None
     
-    # Criar uma figura básica com scatter_mapbox (alternativa mais estável)
+    # Criar uma figura com scatter_mapbox
     fig = go.Figure()
     
-    # Cores para as categorias
+    # Definir cores para as categorias (se estamos visualizando categorias)
     color_map = {
         'Boa': '#00ccff',
         'Moderada': '#009933',
@@ -381,12 +496,25 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
         'Péssima': '#ff0000'
     }
     
+    # Escala de cores para valores numéricos (se estamos visualizando poluentes específicos)
+    if not is_category:
+        # Determinar faixa de valores para o poluente
+        vmin, vmax = map_data[value_col].min(), map_data[value_col].max()
+        
+        # Colorscale específico para cada tipo de poluente
+        colorscales = {
+            'MP10': 'Reds',
+            'MP2.5': 'Oranges',
+            'O3': 'Blues',
+            'NO2': 'Purples',
+            'SO2': 'Greens',
+            'CO': 'Greys',
+            'AOD': 'YlOrBr'
+        }
+        colorscale = colorscales.get(value_col, 'Viridis')
+    
     # Adicionar pontos para cada município
     for idx, row in map_data.iterrows():
-        # Obter a categoria de qualidade do ar e a cor correspondente
-        category = row[cat_col]
-        color = color_map.get(category, '#cccccc')
-        
         # Obter o centroide da geometria para posicionar o ponto
         try:
             # Se a geometria for um polígono, extrair o centroide
@@ -396,34 +524,44 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
             elif hasattr(row.geometry, 'x') and hasattr(row.geometry, 'y'):
                 lon, lat = row.geometry.x, row.geometry.y
             else:
-                # Usar coordenadas extraídas dos dados simulados como fallback
-                city_coords = {
-                    'Campo Grande': [-20.4697, -54.6201],
-                    'Dourados': [-22.2231, -54.812],
-                    'Três Lagoas': [-20.7849, -51.7005],
-                    'Corumbá': [-19.0082, -57.651],
-                    'Ponta Porã': [-22.5334, -55.7271],
-                    'Naviraí': [-23.0624, -54.1994],
-                    'Nova Andradina': [-22.2384, -53.3435],
-                    'Aquidauana': [-20.4697, -55.7879],
-                    'Maracaju': [-21.6407, -55.1678],
-                    'Paranaíba': [-19.6746, -51.1909]
-                }
-                if row['Município'] in city_coords:
-                    lat, lon = city_coords[row['Município']]
+                # Usar coordenadas do dicionário como fallback
+                if row['Município'] in cities_coords:
+                    lat, lon = cities_coords[row['Município']]
                 else:
-                    # Skip if we can't determine coordinates
-                    continue
+                    # Usar as coordenadas do dataframe
+                    lat, lon = row['Latitude'], row['Longitude']
             
-            # Criar texto para hover
-            hover_text = f"<b>{row['Município']}</b><br>" + \
-                        f"Qualidade do Ar: {category}<br>" + \
-                        f"MP10: {row['MP10']:.2f} μg/m³<br>" + \
-                        f"MP2.5: {row['MP2.5']:.2f} μg/m³<br>" + \
-                        f"O3: {row['O3']:.2f} μg/m³<br>" + \
-                        f"NO2: {row['NO2']:.2f} μg/m³<br>" + \
-                        f"SO2: {row['SO2']:.2f} μg/m³<br>" + \
-                        f"CO: {row['CO']:.2f} ppm"
+            # Determinar a cor do marcador
+            if is_category:
+                # Para categorias, usar o mapa de cores pré-definido
+                category = row[value_col]
+                marker_color = color_map.get(category, '#cccccc')
+                
+                # Texto para hover
+                hover_text = f"<b>{row['Município']}</b><br>" + \
+                            f"Qualidade do Ar: {category}<br>" + \
+                            f"MP10: {row['MP10']:.2f} μg/m³<br>" + \
+                            f"MP2.5: {row['MP2.5']:.2f} μg/m³<br>" + \
+                            f"O3: {row['O3']:.2f} μg/m³<br>" + \
+                            f"NO2: {row['NO2']:.2f} μg/m³<br>" + \
+                            f"SO2: {row['SO2']:.2f} μg/m³<br>" + \
+                            f"CO: {row['CO']:.2f} ppm<br>" + \
+                            f"AOD: {row['AOD']:.2f}"
+            else:
+                # Para poluentes específicos, usar o valor numérico
+                value = row[value_col]
+                
+                # Normalizar valor entre 0 e 1 para coloração
+                norm_value = (value - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+                
+                # Escolher cor baseada no valor normalizado
+                marker_color = px.colors.sample_colorscale(
+                    colorscale, [norm_value])[0]
+                
+                # Texto para hover
+                hover_text = f"<b>{row['Município']}</b><br>" + \
+                            f"{value_col}: {value:.2f}<br>" + \
+                            f"Categoria: {row[cat_col]}"
             
             # Adicionar marker
             fig.add_trace(go.Scattermapbox(
@@ -432,7 +570,7 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
                 mode='markers',
                 marker=dict(
                     size=15,
-                    color=color,
+                    color=marker_color,
                     opacity=0.8
                 ),
                 text=row['Município'],
@@ -446,7 +584,7 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
     
     # Configurar o layout do mapa
     fig.update_layout(
-        title=f"Mapa de Qualidade do Ar - {date.strftime('%d/%m/%Y')} (Padrão: {standard})",
+        title=f"Mapa de {pollutant if not is_category else 'Qualidade do Ar'} - {date.strftime('%d/%m/%Y')} (Padrão: {standard})",
         mapbox=dict(
             style="carto-positron",
             zoom=5,
@@ -464,18 +602,86 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
     )
     
     # Adicionar legenda manualmente
-    legend_categories = list(color_map.keys())
-    for i, category in enumerate(legend_categories):
-        fig.add_trace(go.Scattermapbox(
-            lat=[None],
-            lon=[None],
-            mode='markers',
-            marker=dict(size=10, color=color_map[category]),
-            name=category,
-            showlegend=True
-        ))
+    if is_category:
+        # Legenda para categorias
+        legend_categories = list(color_map.keys())
+        for i, category in enumerate(legend_categories):
+            fig.add_trace(go.Scattermapbox(
+                lat=[None],
+                lon=[None],
+                mode='markers',
+                marker=dict(size=10, color=color_map[category]),
+                name=category,
+                showlegend=True
+            ))
+    else:
+        # Legenda para valores numéricos (simplificada)
+        # Adicionar alguns pontos de referência na legenda
+        values = map_data[value_col]
+        breaks = np.linspace(vmin, vmax, 5)
+        
+        # Obter unidade para o poluente
+        units = {
+            'MP10': 'μg/m³',
+            'MP2.5': 'μg/m³',
+            'O3': 'μg/m³',
+            'NO2': 'μg/m³',
+            'SO2': 'μg/m³',
+            'CO': 'ppm',
+            'AOD': ''
+        }
+        unit = units.get(value_col, '')
+        
+        for i, val in enumerate(breaks):
+            norm_val = i / (len(breaks) - 1)
+            color = px.colors.sample_colorscale(colorscale, [norm_val])[0]
+            
+            fig.add_trace(go.Scattermapbox(
+                lat=[None],
+                lon=[None],
+                mode='markers',
+                marker=dict(size=10, color=color),
+                name=f"{val:.2f} {unit}",
+                showlegend=True
+            ))
     
     return fig
+
+# Função para criar animação de mapa sequencial
+def create_sequential_maps(df, gdf, start_date, end_date, pollutant='Categoria_Geral', standard='CONAMA'):
+    """
+    Cria uma sequência de mapas mostrando a evolução da qualidade do ar ao longo do tempo
+    """
+    # Filtrar dados para o período
+    period_data = df[(df['Data'] >= start_date) & (df['Data'] <= end_date)]
+    
+    # Obter datas únicas no período
+    dates = sorted(period_data['Data'].unique())
+    
+    # Verificar se há dados suficientes
+    if len(dates) < 2:
+        st.warning("Período muito curto para criação de sequência. Selecione um período mais longo.")
+        return None
+    
+    # Limitar a 7 dias para performance
+    if len(dates) > 7:
+        st.warning(f"Muitas datas selecionadas. Mostrando apenas os primeiros 7 dias de {len(dates)} disponíveis.")
+        dates = dates[:7]
+    
+    # Criar um mapa para cada data
+    maps = []
+    for date in dates:
+        with st.spinner(f"Gerando mapa para {date.strftime('%d/%m/%Y')}..."):
+            fig = create_air_quality_map(df, gdf, date, pollutant, standard)
+            if fig:
+                # Converter figura Plotly para imagem
+                img_bytes = fig.to_image(format="png", width=1000, height=600)
+                maps.append({
+                    'date': date.strftime('%d/%m/%Y'),
+                    'image': img_bytes
+                })
+    
+    return maps
 
 # Função para gerar relatório de qualidade do ar
 def generate_air_quality_report(df, municipality, start_date, end_date, standard='CONAMA'):
@@ -499,7 +705,7 @@ def generate_air_quality_report(df, municipality, start_date, end_date, standard
     
     # Calcular estatísticas
     stats = {}
-    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO']
+    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
     
     for pollutant in pollutants:
         stats[pollutant] = {
@@ -516,6 +722,9 @@ def generate_air_quality_report(df, municipality, start_date, end_date, standard
     worst_days = {}
     for pollutant in pollutants:
         cat_col_poll = f'Categoria_{prefix}{pollutant}'
+        if mun_data.empty:
+            continue
+            
         worst_idx = mun_data[cat_col_poll].map(
             {'Boa': 0, 'Moderada': 1, 'Ruim': 2, 'Muito Ruim': 3, 'Péssima': 4}
         ).idxmax()
@@ -545,8 +754,9 @@ def generate_air_quality_report(df, municipality, start_date, end_date, standard
     return report
 
 # Carregar municípios
-ms_municipalities = load_ms_municipalities()
-municipalities_list = sorted(ms_municipalities['NM_MUN'].unique().tolist())
+with st.spinner("Carregando shapes dos municípios..."):
+    ms_municipalities = load_ms_municipalities()
+    municipalities_list = sorted(ms_municipalities['NM_MUN'].unique().tolist())
 
 # Sidebar para configurações
 st.sidebar.header("⚙️ Configurações")
@@ -590,16 +800,15 @@ with st.spinner("🔄 Carregando dados de qualidade do ar..."):
     air_data = get_air_quality_data(selected_municipalities, start_date, end_date)
     
     # Classificar qualidade do ar
-    if standard == "CONAMA":
-        air_data = classify_air_quality_conama(air_data)
-    else:  # WHO
-        air_data = classify_air_quality_who(air_data)
+    air_data = classify_air_quality_conama(air_data)
+    air_data = classify_air_quality_who(air_data)
 
 # Layout principal - usar abas
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Visão Geral", 
     "📈 Séries Temporais", 
     "🗺️ Mapa de Qualidade do Ar",
+    "🎬 Animação Sequencial",
     "📝 Relatórios"
 ])
 
@@ -657,18 +866,18 @@ with tab1:
         
         with col3:
             # Calcular média dos poluentes
-            pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO']
+            pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
             avg_values = {p: mun_data[p].mean() for p in pollutants}
             # Encontrar o poluente com maior valor em relação ao limite
             if standard == "CONAMA":
                 limits = {
                     'MP10': 50, 'MP2.5': 25, 'O3': 100,
-                    'NO2': 200, 'SO2': 20, 'CO': 9
+                    'NO2': 200, 'SO2': 20, 'CO': 9, 'AOD': 0.1
                 }
             else:  # WHO
                 limits = {
                     'MP10': 15, 'MP2.5': 5, 'O3': 60,
-                    'NO2': 25, 'SO2': 40, 'CO': 4
+                    'NO2': 25, 'SO2': 40, 'CO': 4, 'AOD': 0.05
                 }
             
             ratios = {p: avg_values[p] / limits[p] for p in pollutants}
@@ -727,7 +936,7 @@ with tab2:
     mun_data = air_data[air_data['Município'] == selected_mun]
     
     # Criar tabela de resumo
-    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO']
+    pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
     summary_data = []
     
     for pollutant in pollutants:
@@ -741,14 +950,14 @@ with tab2:
         if standard == "CONAMA":
             limit = {
                 'MP10': 50, 'MP2.5': 25, 'O3': 100,
-                'NO2': 200, 'SO2': 20, 'CO': 9
+                'NO2': 200, 'SO2': 20, 'CO': 9, 'AOD': 0.1
             }[pollutant]
             
             cat_col = f'Categoria_{pollutant}'
         else:  # WHO
             limit = {
                 'MP10': 15, 'MP2.5': 5, 'O3': 60,
-                'NO2': 25, 'SO2': 40, 'CO': 4
+                'NO2': 25, 'SO2': 40, 'CO': 4, 'AOD': 0.05
             }[pollutant]
             
             cat_col = f'Categoria_WHO_{pollutant}'
@@ -764,7 +973,7 @@ with tab2:
         # Adicionar unidades
         units = {
             'MP10': 'μg/m³', 'MP2.5': 'μg/m³', 'O3': 'μg/m³',
-            'NO2': 'μg/m³', 'SO2': 'μg/m³', 'CO': 'ppm'
+            'NO2': 'μg/m³', 'SO2': 'μg/m³', 'CO': 'ppm', 'AOD': ''
         }[pollutant]
         
         # Adicionar à lista
@@ -795,11 +1004,23 @@ with tab2:
 with tab3:
     st.header("🗺️ Mapa de Qualidade do Ar")
     
-    # Selecionar data para o mapa
-    selected_date = st.date_input(
-        "Selecione uma data para visualizar o mapa",
-        value=pd.to_datetime(air_data['Data'].min()).date()
-    )
+    # Selecionar data e poluente para o mapa
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        selected_date = st.date_input(
+            "Selecione uma data para visualizar o mapa",
+            value=pd.to_datetime(air_data['Data'].min()).date()
+        )
+    
+    with col2:
+        # Opções: Categoria geral ou poluente específico
+        pollutant_options = ['Categoria_Geral', 'MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
+        selected_pollutant = st.selectbox(
+            "Selecione o parâmetro a visualizar",
+            options=pollutant_options,
+            format_func=lambda x: "Qualidade Geral" if x == "Categoria_Geral" else x
+        )
     
     # Converter para datetime
     selected_datetime = pd.to_datetime(selected_date)
@@ -808,22 +1029,190 @@ with tab3:
     if not air_data[air_data['Data'].dt.date == selected_date].empty:
         # Criar mapa
         with st.spinner("Gerando mapa..."):
-            fig = create_air_quality_map(air_data, ms_municipalities, selected_datetime, standard)
-            st.plotly_chart(fig, use_container_width=True)
+            fig = create_air_quality_map(air_data, ms_municipalities, selected_datetime, selected_pollutant, standard)
             
-            # Adicionar legenda
-            st.markdown("""
-            ### Legenda de Qualidade do Ar
-            - 🔵 **Boa**: Qualidade do ar satisfatória, com mínimo ou nenhum risco à saúde.
-            - 🟢 **Moderada**: Qualidade do ar aceitável, mas pode haver risco para pessoas muito sensíveis.
-            - 🟡 **Ruim**: Membros de grupos sensíveis podem ter efeitos na saúde.
-            - 🟠 **Muito Ruim**: Todos podem começar a sentir efeitos na saúde, grupos sensíveis podem ter efeitos mais graves.
-            - 🔴 **Péssima**: Alerta de saúde. Toda a população pode ter riscos de saúde mais sérios.
-            """)
+            if fig:
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Adicionar legenda
+                if selected_pollutant == 'Categoria_Geral':
+                    st.markdown("""
+                    ### Legenda de Qualidade do Ar
+                    - 🔵 **Boa**: Qualidade do ar satisfatória, com mínimo ou nenhum risco à saúde.
+                    - 🟢 **Moderada**: Qualidade do ar aceitável, mas pode haver risco para pessoas muito sensíveis.
+                    - 🟡 **Ruim**: Membros de grupos sensíveis podem ter efeitos na saúde.
+                    - 🟠 **Muito Ruim**: Todos podem começar a sentir efeitos na saúde, grupos sensíveis podem ter efeitos mais graves.
+                    - 🔴 **Péssima**: Alerta de saúde. Toda a população pode ter riscos de saúde mais sérios.
+                    """)
+                else:
+                    # Informações sobre o poluente selecionado
+                    pollutant_info = {
+                        'MP10': """
+                        **Material Particulado (MP10)** - Partículas inaláveis com diâmetro menor que 10 micrômetros.
+                        - **Fontes**: Queimadas, construção civil, ressuspensão de poeira, indústrias.
+                        - **Efeitos na saúde**: Agravamento de asma, diminuição da função pulmonar, aumento de doenças respiratórias.
+                        - **Limite CONAMA**: 50 μg/m³ (média de 24h)
+                        - **Limite OMS**: 15 μg/m³ (média de 24h)
+                        """,
+                        'MP2.5': """
+                        **Material Particulado Fino (MP2.5)** - Partículas inaláveis com diâmetro menor que 2,5 micrômetros.
+                        - **Fontes**: Queimadas, veículos a diesel, processos industriais, formação secundária na atmosfera.
+                        - **Efeitos na saúde**: Penetra profundamente nos pulmões e na corrente sanguínea, causando problemas respiratórios e cardiovasculares.
+                        - **Limite CONAMA**: 25 μg/m³ (média de 24h)
+                        - **Limite OMS**: 5 μg/m³ (média de 24h)
+                        """,
+                        'O3': """
+                        **Ozônio (O3)** - Poluente secundário formado por reações fotoquímicas.
+                        - **Fontes**: Formado pela reação de NOx e COVs na presença de luz solar.
+                        - **Efeitos na saúde**: Irritação nos olhos e vias respiratórias, redução da função pulmonar, agravamento de asma.
+                        - **Limite CONAMA**: 100 μg/m³ (média de 8h)
+                        - **Limite OMS**: 60 μg/m³ (média de 8h)
+                        """,
+                        'NO2': """
+                        **Dióxido de Nitrogênio (NO2)** - Gás poluente primário e precursor de outros poluentes.
+                        - **Fontes**: Veículos automotores, usinas termelétricas, indústrias.
+                        - **Efeitos na saúde**: Irritação do sistema respiratório, redução da capacidade pulmonar, aumento de infecções respiratórias.
+                        - **Limite CONAMA**: 200 μg/m³ (média de 1h)
+                        - **Limite OMS**: 25 μg/m³ (média de 24h)
+                        """,
+                        'SO2': """
+                        **Dióxido de Enxofre (SO2)** - Gás poluente primário.
+                        - **Fontes**: Queima de combustíveis com enxofre, termelétricas, indústrias.
+                        - **Efeitos na saúde**: Irritação dos olhos, nariz e garganta, agravamento de doenças respiratórias, especialmente asma.
+                        - **Limite CONAMA**: 20 μg/m³ (média de 24h)
+                        - **Limite OMS**: 40 μg/m³ (média de 24h)
+                        """,
+                        'CO': """
+                        **Monóxido de Carbono (CO)** - Gás tóxico sem cor ou odor.
+                        - **Fontes**: Veículos, queimadas, combustão incompleta.
+                        - **Efeitos na saúde**: Reduz a capacidade do sangue de transportar oxigênio, causando dores de cabeça, tonturas e até morte.
+                        - **Limite CONAMA**: 9 ppm (média de 8h)
+                        - **Limite OMS**: 4 ppm (média de 8h)
+                        """,
+                        'AOD': """
+                        **Profundidade Óptica de Aerossóis (AOD)** - Medida da quantidade de luz bloqueada por partículas suspensas.
+                        - **Fontes**: Queimadas, poeira, spray marinho, emissões urbanas e industriais.
+                        - **Significado**: Valores mais altos indicam maior concentração de aerossóis e pior qualidade do ar.
+                        - **Interpretação**:
+                          - AOD < 0.1: Céu limpo, boa qualidade do ar
+                          - AOD 0.1-0.3: Qualidade moderada
+                          - AOD 0.3-0.5: Qualidade ruim
+                          - AOD > 0.5: Qualidade muito ruim a péssima
+                        """
+                    }
+                    
+                    st.markdown(f"### Informações sobre {selected_pollutant}")
+                    st.markdown(pollutant_info.get(selected_pollutant, ""))
     else:
         st.warning(f"Não há dados disponíveis para a data {selected_date.strftime('%d/%m/%Y')}.")
 
 with tab4:
+    st.header("🎬 Animação Sequencial")
+    
+    # Seleção de período e poluente para animação
+    st.subheader("Configurações da Animação")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        anim_start_date = st.date_input(
+            "Data inicial da animação",
+            value=start_date,
+            key="anim_start_date"
+        )
+        
+        anim_end_date = st.date_input(
+            "Data final da animação",
+            value=min(start_date + timedelta(days=6), end_date),
+            key="anim_end_date"
+        )
+    
+    with col2:
+        # Selecionar poluente para animação
+        anim_pollutant = st.selectbox(
+            "Parâmetro a animar",
+            options=['Categoria_Geral', 'MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD'],
+            format_func=lambda x: "Qualidade Geral" if x == "Categoria_Geral" else x,
+            key="anim_pollutant"
+        )
+        
+        # Velocidade da animação
+        anim_speed = st.slider(
+            "Velocidade da animação (segundos por frame)",
+            min_value=1,
+            max_value=5,
+            value=2
+        )
+    
+    # Botão para gerar animação
+    if st.button("🎬 Gerar Animação Sequencial", type="primary"):
+        if (anim_end_date - anim_start_date).days > 14:
+            st.warning("Por favor, selecione um período de no máximo 14 dias para a animação.")
+        elif anim_start_date > anim_end_date:
+            st.error("A data inicial deve ser anterior à data final.")
+        else:
+            # Gerar mapas sequenciais
+            with st.spinner("Gerando sequência de mapas..."):
+                maps = create_sequential_maps(
+                    air_data, 
+                    ms_municipalities, 
+                    pd.to_datetime(anim_start_date), 
+                    pd.to_datetime(anim_end_date), 
+                    anim_pollutant, 
+                    standard
+                )
+            
+            if maps and len(maps) > 0:
+                st.success(f"Sequência gerada com {len(maps)} mapas!")
+                
+                # Exibir animação
+                st.subheader(f"Evolução de {anim_pollutant if anim_pollutant != 'Categoria_Geral' else 'Qualidade do Ar'}")
+                
+                # Container para exibição dos mapas
+                map_container = st.empty()
+                
+                # Função para alternar entre os mapas automaticamente (simulando GIF)
+                def show_maps_sequence():
+                    # Primeiro ciclo
+                    for i, map_data in enumerate(maps):
+                        map_container.image(
+                            map_data['image'],
+                            caption=f"Data: {map_data['date']}",
+                            use_column_width=True
+                        )
+                        time.sleep(anim_speed)
+                    
+                    # Ciclo repetido (opcional)
+                    for i, map_data in enumerate(maps):
+                        map_container.image(
+                            map_data['image'],
+                            caption=f"Data: {map_data['date']}",
+                            use_column_width=True
+                        )
+                        time.sleep(anim_speed)
+                
+                # Iniciar animação
+                show_maps_sequence()
+                
+                # Mostrar todos os mapas individuais
+                st.subheader("Mapas Individuais")
+                for i, map_data in enumerate(maps):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.image(
+                            map_data['image'],
+                            caption=f"Data: {map_data['date']}",
+                            use_column_width=True
+                        )
+                    with col2:
+                        # Converter para base64 para permitir download
+                        b64 = base64.b64encode(map_data['image']).decode()
+                        href = f'<a href="data:image/png;base64,{b64}" download="mapa_{anim_pollutant}_{map_data["date"]}.png">⬇️ Baixar este mapa</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+            else:
+                st.warning("Não foi possível gerar a sequência de mapas. Verifique os dados e tente novamente.")
+
+with tab5:
     st.header("📝 Relatórios de Qualidade do Ar")
     
     # Selecionar município para relatório
@@ -879,7 +1268,7 @@ with tab4:
                     stats = report['Estatísticas'][pollutant]
                     
                     # Obter unidade
-                    unit = 'ppm' if pollutant == 'CO' else 'μg/m³'
+                    unit = 'ppm' if pollutant == 'CO' else ('adimensional' if pollutant == 'AOD' else 'μg/m³')
                     
                     st.markdown(f"""
                     #### {pollutant}
@@ -1005,7 +1394,7 @@ A Organização Mundial da Saúde (OMS) atualizou suas diretrizes de qualidade d
 - O3 (Ozônio): 60 μg/m³ (média de 8h)
 - NO2 (Dióxido de Nitrogênio): 25 μg/m³ (média de 24h)
 - SO2 (Dióxido de Enxofre): 40 μg/m³ (média de 24h)
-- CO (Monóxido de Carbono): 4 ppm (média de 24h)
+- CO (Monóxido de Carbono): 4 ppm (média de 8h)
 
 ### 🏥 Efeitos na Saúde
 
@@ -1015,7 +1404,15 @@ A Organização Mundial da Saúde (OMS) atualizou suas diretrizes de qualidade d
 - **Muito Ruim**: Todos podem começar a sentir efeitos na saúde, grupos sensíveis podem ter efeitos mais graves.
 - **Péssima**: Alerta de saúde. Toda a população pode ter riscos de saúde mais sérios.
 
+### 💨 Fontes Comuns de Poluição Atmosférica em Mato Grosso do Sul
+
+- **Queimadas**: Principal fonte de poluição atmosférica no estado, especialmente durante a estação seca.
+- **Veículos**: Emissões de veículos em centros urbanos como Campo Grande e Dourados.
+- **Indústrias**: Processamento de cana-de-açúcar, frigoríficos, papel e celulose.
+- **Agropecuária**: Poeira de solo, ressuspensão e emissões de implementos agrícolas.
+- **Atividades mineradoras**: Principalmente na região de Corumbá.
+
 ---
 
-Desenvolvido para monitoramento da qualidade do ar no estado de Mato Grosso do Sul - Brasil.
+Sistema desenvolvido para monitoramento da qualidade do ar no estado de Mato Grosso do Sul - Brasil.
 """)

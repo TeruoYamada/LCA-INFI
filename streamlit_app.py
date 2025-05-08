@@ -348,6 +348,7 @@ def create_time_series_plot(df, municipality, standard='CONAMA'):
 def create_air_quality_map(df, gdf, date, standard='CONAMA'):
     """
     Cria um mapa interativo com a qualidade do ar para todos os municípios em uma data específica
+    Usando uma abordagem alternativa com go.Figure para evitar problemas com px.choropleth_mapbox
     """
     # Filtrar dados para a data
     date_data = df[df['Data'] == date]
@@ -363,43 +364,116 @@ def create_air_quality_map(df, gdf, date, standard='CONAMA'):
     # Mesclar dados com o geodataframe
     map_data = gdf.merge(date_data, left_on='NM_MUN', right_on='Município', how='inner')
     
-    # Criar mapa
-    fig = px.choropleth_mapbox(
-        map_data,
-        geojson=map_data.geometry.__geo_interface__,
-        locations=map_data.index,
-        color=cat_col,
-        color_discrete_map={
-            'Boa': '#00ccff',
-            'Moderada': '#009933',
-            'Ruim': '#ffff00',
-            'Muito Ruim': '#ff9933',
-            'Péssima': '#ff0000'
-        },
-        mapbox_style="carto-positron",
-        zoom=5,
-        center={"lat": -20.5, "lon": -54.6},
-        opacity=0.7,
-        labels={cat_col: 'Qualidade do Ar'},
-        hover_name='Município',
-        hover_data={
-            'MP10': True,
-            'MP2.5': True,
-            'O3': True,
-            'NO2': True,
-            'SO2': True,
-            'CO': True,
-            cat_col: True,
-            'index': False
-        }
-    )
+    # Verificar se há dados para criar o mapa
+    if map_data.empty:
+        st.warning(f"Não há dados de qualidade do ar disponíveis para {date.strftime('%d/%m/%Y')}")
+        return None
     
-    # Atualizar layout
+    # Criar uma figura básica com scatter_mapbox (alternativa mais estável)
+    fig = go.Figure()
+    
+    # Cores para as categorias
+    color_map = {
+        'Boa': '#00ccff',
+        'Moderada': '#009933',
+        'Ruim': '#ffff00',
+        'Muito Ruim': '#ff9933',
+        'Péssima': '#ff0000'
+    }
+    
+    # Adicionar pontos para cada município
+    for idx, row in map_data.iterrows():
+        # Obter a categoria de qualidade do ar e a cor correspondente
+        category = row[cat_col]
+        color = color_map.get(category, '#cccccc')
+        
+        # Obter o centroide da geometria para posicionar o ponto
+        try:
+            # Se a geometria for um polígono, extrair o centroide
+            if hasattr(row.geometry, 'centroid'):
+                lon, lat = row.geometry.centroid.x, row.geometry.centroid.y
+            # Se for um ponto (caso do fallback), usar as coordenadas diretamente
+            elif hasattr(row.geometry, 'x') and hasattr(row.geometry, 'y'):
+                lon, lat = row.geometry.x, row.geometry.y
+            else:
+                # Usar coordenadas extraídas dos dados simulados como fallback
+                city_coords = {
+                    'Campo Grande': [-20.4697, -54.6201],
+                    'Dourados': [-22.2231, -54.812],
+                    'Três Lagoas': [-20.7849, -51.7005],
+                    'Corumbá': [-19.0082, -57.651],
+                    'Ponta Porã': [-22.5334, -55.7271],
+                    'Naviraí': [-23.0624, -54.1994],
+                    'Nova Andradina': [-22.2384, -53.3435],
+                    'Aquidauana': [-20.4697, -55.7879],
+                    'Maracaju': [-21.6407, -55.1678],
+                    'Paranaíba': [-19.6746, -51.1909]
+                }
+                if row['Município'] in city_coords:
+                    lat, lon = city_coords[row['Município']]
+                else:
+                    # Skip if we can't determine coordinates
+                    continue
+            
+            # Criar texto para hover
+            hover_text = f"<b>{row['Município']}</b><br>" + \
+                        f"Qualidade do Ar: {category}<br>" + \
+                        f"MP10: {row['MP10']:.2f} μg/m³<br>" + \
+                        f"MP2.5: {row['MP2.5']:.2f} μg/m³<br>" + \
+                        f"O3: {row['O3']:.2f} μg/m³<br>" + \
+                        f"NO2: {row['NO2']:.2f} μg/m³<br>" + \
+                        f"SO2: {row['SO2']:.2f} μg/m³<br>" + \
+                        f"CO: {row['CO']:.2f} ppm"
+            
+            # Adicionar marker
+            fig.add_trace(go.Scattermapbox(
+                lat=[lat],
+                lon=[lon],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color=color,
+                    opacity=0.8
+                ),
+                text=row['Município'],
+                hoverinfo='text',
+                hovertext=hover_text,
+                name=row['Município']
+            ))
+        except Exception as e:
+            st.warning(f"Erro ao processar município {row['Município']}: {str(e)}")
+            continue
+    
+    # Configurar o layout do mapa
     fig.update_layout(
         title=f"Mapa de Qualidade do Ar - {date.strftime('%d/%m/%Y')} (Padrão: {standard})",
+        mapbox=dict(
+            style="carto-positron",
+            zoom=5,
+            center={"lat": -20.5, "lon": -54.6},
+        ),
         height=600,
-        margin={"r":0,"t":30,"l":0,"b":0}
+        margin={"r":0,"t":50,"l":0,"b":0},
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
+    
+    # Adicionar legenda manualmente
+    legend_categories = list(color_map.keys())
+    for i, category in enumerate(legend_categories):
+        fig.add_trace(go.Scattermapbox(
+            lat=[None],
+            lon=[None],
+            mode='markers',
+            marker=dict(size=10, color=color_map[category]),
+            name=category,
+            showlegend=True
+        ))
     
     return fig
 

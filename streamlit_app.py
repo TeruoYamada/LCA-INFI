@@ -1224,8 +1224,8 @@ with tab4:
                     standard
                 )
             
-    # Botão para gerar animação
-    if st.button("🎬 Gerar Animação Sequencial", type="primary"):
+    # Botão para gerar animação - com key única
+    if st.button("🎬 Gerar Animação Sequencial", type="primary", key="btn_animation_sequential"):
         if (anim_end_date - anim_start_date).days > 14:
             st.warning("Por favor, selecione um período de no máximo 14 dias para a animação.")
         elif anim_start_date > anim_end_date:
@@ -1248,19 +1248,20 @@ with tab4:
                 # Exibir mapas na interface
                 st.subheader(f"Evolução de {anim_pollutant if anim_pollutant != 'Categoria_Geral' else 'Qualidade do Ar'}")
                 
-                # Controles de navegação mais simples
+                # Controles de navegação mais simples - com key única
                 date_selector = st.selectbox(
                     "Selecione a data para visualização",
                     options=range(len(maps)),
-                    format_func=lambda i: maps[i]['date'] if i < len(maps) else ""
+                    format_func=lambda i: maps[i]['date'] if i < len(maps) else "",
+                    key="date_selector_animation"
                 )
                 
                 # Mostrar o mapa selecionado
                 st.markdown(f"### Data: {maps[date_selector]['date']}")
                 st.plotly_chart(maps[date_selector]['figure'], use_container_width=True)
                 
-                # Opção para mostrar todos os mapas
-                if st.checkbox("Mostrar todos os mapas", value=False):
+                # Opção para mostrar todos os mapas - com key única
+                if st.checkbox("Mostrar todos os mapas", value=False, key="chk_show_all_maps"):
                     st.subheader("Todos os Mapas")
                     for i, map_item in enumerate(maps):
                         st.markdown(f"### Mapa {i+1}: {map_item['date']}")
@@ -1272,15 +1273,15 @@ with tab4:
 with tab5:
     st.header("📝 Relatórios de Qualidade do Ar")
     
-    # Selecionar município para relatório
+    # Selecionar município para relatório - com key única
     report_mun = st.selectbox(
         "Selecione um município para gerar relatório",
         options=selected_municipalities,
-        key="report_municipality"
+        key="report_municipality_select"
     )
     
-    # Gerar relatório
-    if st.button("🔍 Gerar Relatório Detalhado"):
+    # Gerar relatório - com key única
+    if st.button("🔍 Gerar Relatório Detalhado", key="btn_generate_report"):
         with st.spinner("Gerando relatório..."):
             report = generate_air_quality_report(air_data, report_mun, start_date, end_date, standard)
             
@@ -1384,7 +1385,7 @@ with tab5:
             
             st.markdown(recommendations.get(predominant_cat, "Não há recomendações disponíveis."))
             
-            # Opção para download do relatório em formato JSON
+            # Opção para download do relatório em formato JSON - com key única
             report_json = json.dumps(
                 {
                     'Município': report['Município'],
@@ -1417,7 +1418,8 @@ with tab5:
                 label="⬇️ Baixar Relatório (JSON)",
                 data=report_json.encode('utf-8'),
                 file_name=f"relatorio_{report_mun}_{start_date}_a_{end_date}.json",
-                mime="application/json"
+                mime="application/json",
+                key="btn_download_report_json"
             )
             
             # Opção para download do relatório em PDF (simulação)

@@ -94,140 +94,12 @@ cities_coords = {
     "Chapadão do Sul": [-18.7908, -52.6276]
 }
 
-# Função para obter dados de qualidade do ar do CAMS
-def get_cams_air_quality_data(municipalities, start_date, end_date):
+# Função para simular/obter dados de qualidade do ar
+def get_air_quality_data(municipalities, start_date, end_date):
     """
-    Tenta obter dados reais do CAMS (Copernicus Atmosphere Monitoring Service)
-    para os poluentes MP10, MP2.5, O3, NO2, SO2, CO.
-    
-    Se a API não estiver configurada ou falhar, usa dados simulados.
-    """
-    try:
-        st.info("Tentando obter dados reais do CAMS (Copernicus Atmosphere Monitoring Service)...")
-        
-        # Verificar se as credenciais do CAMS estão configuradas
-        # (Em um ambiente real, você precisaria configurar as credenciais no secrets.toml)
-        has_cams_credentials = False
-        
-        try:
-            ads_url = st.secrets["ads"]["url"]
-            ads_key = st.secrets["ads"]["key"]
-            has_cams_credentials = True
-        except:
-            st.warning("Credenciais do CAMS não encontradas. Usando dados simulados.")
-            has_cams_credentials = False
-        
-        if has_cams_credentials:
-            # Importar biblioteca necessária
-            import cdsapi
-            
-            # Configurar cliente
-            client = cdsapi.Client(url=ads_url, key=ads_key)
-            
-            # Lista para armazenar os dados
-            data_list = []
-            
-            # Para cada município, obter coordenadas e buscar dados
-            for municipality in municipalities:
-                # Obter coordenadas
-                if municipality in cities_coords:
-                    lat, lon = cities_coords[municipality]
-                    
-                    # Formatar datas
-                    start_date_str = start_date.strftime('%Y-%m-%d')
-                    end_date_str = end_date.strftime('%Y-%m-%d')
-                    
-                    # Preparar requisição para CAMS
-                    request = {
-                        'format': 'netcdf',
-                        'variable': [
-                            'particulate_matter_10um', 'particulate_matter_2.5um',
-                            'nitrogen_dioxide', 'sulphur_dioxide', 
-                            'carbon_monoxide', 'ozone',
-                        ],
-                        'date': f'{start_date_str}/{end_date_str}',
-                        'area': [
-                            lat + 0.1, lon - 0.1,
-                            lat - 0.1, lon + 0.1,
-                        ],
-                    }
-                    
-                    # Nome do arquivo temporário
-                    filename = f'cams_data_{municipality}_{start_date_str}_{end_date_str}.nc'
-                    
-                    # Buscar dados
-                    st.info(f"Buscando dados para {municipality}...")
-                    client.retrieve('cams-europe-air-quality-forecasts', request, filename)
-                    
-                    # Processar dados do NetCDF
-                    import xarray as xr
-                    
-                    # Abrir arquivo
-                    ds = xr.open_dataset(filename)
-                    
-                    # Extrair séries temporais para cada poluente
-                    for date_idx, date in enumerate(pd.date_range(start=start_date, end=end_date, freq='D')):
-                        # Mapear variáveis do CAMS para nomes dos poluentes no aplicativo
-                        pollutant_mapping = {
-                            'particulate_matter_10um': 'MP10',
-                            'particulate_matter_2.5um': 'MP2.5',
-                            'nitrogen_dioxide': 'NO2',
-                            'sulphur_dioxide': 'SO2',
-                            'carbon_monoxide': 'CO',
-                            'ozone': 'O3',
-                        }
-                        
-                        # Extrair valores para cada poluente
-                        pollutant_values = {}
-                        
-                        for cams_var, pollutant_name in pollutant_mapping.items():
-                            if cams_var in ds.variables:
-                                # Obter valor médio para o dia e coordenada
-                                value = float(ds[cams_var].sel(time=date, 
-                                                           latitude=lat, 
-                                                           longitude=lon,
-                                                           method='nearest').mean().values)
-                                pollutant_values[pollutant_name] = max(0, value)
-                            else:
-                                # Se a variável não estiver disponível, usar valor simulado
-                                pollutant_values[pollutant_name] = np.random.uniform(10, 50)
-                        
-                        # Adicionar AOD (simulado, já que não está diretamente disponível no CAMS)
-                        pollutant_values['AOD'] = np.random.uniform(0.05, 0.3)
-                        
-                        # Adicionar à lista de dados
-                        data_list.append({
-                            'Município': municipality,
-                            'Data': date,
-                            'Latitude': lat,
-                            'Longitude': lon,
-                            **pollutant_values
-                        })
-                    
-                    # Fechar e remover arquivo temporário
-                    ds.close()
-                    import os
-                    os.remove(filename)
-            
-            # Criar DataFrame
-            if data_list:
-                return pd.DataFrame(data_list)
-            else:
-                raise Exception("Nenhum dado foi obtido do CAMS")
-        else:
-            # Se não houver credenciais, usar dados simulados
-            raise Exception("Credenciais do CAMS não configuradas")
-    
-    except Exception as e:
-        st.warning(f"Erro ao obter dados do CAMS: {str(e)}. Usando dados simulados.")
-        # Se falhar, usar a função simulada
-        return get_simulated_air_quality_data(municipalities, start_date, end_date)
-
-# Função para simular dados de qualidade do ar
-def get_simulated_air_quality_data(municipalities, start_date, end_date):
-    """
-    Simula dados de qualidade do ar para os municípios selecionados
-    no período especificado.
+    Simula ou obtém dados de qualidade do ar para os municípios selecionados
+    no período especificado. Em um ambiente de produção, substituir por
+    chamadas a APIs reais de qualidade do ar ou fontes de dados oficiais.
     """
     # Lista de poluentes
     pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
@@ -691,19 +563,17 @@ def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard=
                             f"{value_col}: {value:.2f}<br>" + \
                             f"Categoria: {row[cat_col]}"
             
-            # Adicionar marker com rótulo de texto para o município
+            # Adicionar marker
             fig.add_trace(go.Scattermapbox(
                 lat=[lat],
                 lon=[lon],
-                mode='markers+text',
+                mode='markers',
                 marker=dict(
                     size=15,
                     color=marker_color,
                     opacity=0.8
                 ),
                 text=row['Município'],
-                textposition="top center",
-                textfont=dict(size=10, color="black"),
                 hoverinfo='text',
                 hovertext=hover_text,
                 name=row['Município']
@@ -721,127 +591,67 @@ def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard=
             center={"lat": -20.5, "lon": -54.6},
         ),
         height=600,
-        margin={"r":0,"t":50,"l":0,"b":0}
+        margin={"r":0,"t":50,"l":0,"b":0},
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
     
     # Adicionar legenda manualmente
     if is_category:
-        # Adicionar legenda de categorias no canto do mapa
-        annotations = []
-        
-        # Título da legenda
-        annotations.append(dict(
-            x=0.01,
-            y=0.99,
-            xref="paper",
-            yref="paper",
-            text="<b>Legenda de Qualidade do Ar</b>",
-            showarrow=False,
-            font=dict(size=14),
-            bgcolor="white",
-            bordercolor="black",
-            borderwidth=1,
-            borderpad=4,
-            opacity=0.8
-        ))
-        
-        # Entradas da legenda
-        legend_entries = [
-            ('Boa', 'Qualidade satisfatória, mínimo risco à saúde'),
-            ('Moderada', 'Aceitável, risco para grupos sensíveis'),
-            ('Ruim', 'Grupos sensíveis podem ter efeitos na saúde'),
-            ('Muito Ruim', 'Efeitos na saúde para toda população'),
-            ('Péssima', 'Alerta de saúde, riscos sérios')
-        ]
-        
-        # Adicionar cada entrada da legenda como anotação
-        for i, (cat, desc) in enumerate(legend_entries):
-            color = color_map[cat]
-            y_pos = 0.95 - (i+1) * 0.05
-            
-            # Ícone colorido
-            annotations.append(dict(
-                x=0.01,
-                y=y_pos,
-                xref="paper",
-                yref="paper",
-                text=f"<span style='color:{color}'>■</span> <b>{cat}</b>: {desc}",
-                showarrow=False,
-                font=dict(size=12),
-                bgcolor="white",
-                bordercolor="white",
-                borderwidth=0,
-                borderpad=2,
-                opacity=0.8
+        # Legenda para categorias
+        legend_categories = list(color_map.keys())
+        for i, category in enumerate(legend_categories):
+            fig.add_trace(go.Scattermapbox(
+                lat=[None],
+                lon=[None],
+                mode='markers',
+                marker=dict(size=10, color=color_map[category]),
+                name=category,
+                showlegend=True
             ))
+    else:
+        # Legenda para valores numéricos (simplificada)
+        # Adicionar alguns pontos de referência na legenda
+        values = map_data[value_col]
+        breaks = np.linspace(vmin, vmax, 5)
         
-        fig.update_layout(annotations=annotations)
+        # Obter unidade para o poluente
+        units = {
+            'MP10': 'μg/m³',
+            'MP2.5': 'μg/m³',
+            'O3': 'μg/m³',
+            'NO2': 'μg/m³',
+            'SO2': 'μg/m³',
+            'CO': 'ppm',
+            'AOD': ''
+        }
+        unit = units.get(value_col, '')
         
-        # Adicionar também uma legenda interativa (clicável)
-        for category, color in color_map.items():
+        for i, val in enumerate(breaks):
+            norm_val = i / (len(breaks) - 1)
+            color = px.colors.sample_colorscale(colorscale, [norm_val])[0]
+            
             fig.add_trace(go.Scattermapbox(
                 lat=[None],
                 lon=[None],
                 mode='markers',
                 marker=dict(size=10, color=color),
-                name=category,
+                name=f"{val:.2f} {unit}",
                 showlegend=True
             ))
-    else:
-        # Legenda para valores numéricos
-        # Adicionar uma colorbar
-        colorbar_trace = go.Choroplethmapbox(
-            z=[0],
-            locations=[""],
-            colorscale=colorscale,
-            showscale=True,
-            visible=False,
-            colorbar=dict(
-                title=f"{value_col}",
-                thickness=20,
-                len=0.5,
-                y=0.5,
-                tickmode="array",
-                tickvals=np.linspace(vmin, vmax, 5),
-                ticktext=[f"{v:.2f}" for v in np.linspace(vmin, vmax, 5)]
-            )
-        )
-        fig.add_trace(colorbar_trace)
-        
-        # Adicionar anotações com explicações sobre o poluente
-        pollutant_desc = {
-            'MP10': "Material particulado inalável (diâmetro <10 μm)",
-            'MP2.5': "Material particulado fino (diâmetro <2.5 μm)",
-            'O3': "Ozônio troposférico (poluente secundário)",
-            'NO2': "Dióxido de nitrogênio (emissões veiculares)",
-            'SO2': "Dióxido de enxofre (combustão fóssil)",
-            'CO': "Monóxido de carbono (combustão incompleta)",
-            'AOD': "Profundidade óptica de aerossóis"
-        }
-        
-        # Adicionar descrição do poluente
-        fig.add_annotation(
-            x=0.5,
-            y=0.01,
-            xref="paper",
-            yref="paper",
-            text=f"<b>{value_col}:</b> {pollutant_desc.get(value_col, '')}",
-            showarrow=False,
-            font=dict(size=12),
-            bgcolor="white",
-            bordercolor="black",
-            borderwidth=1,
-            borderpad=4,
-            opacity=0.8
-        )
     
     return fig
 
 # Função para criar animação de mapa sequencial
 def create_sequential_maps(df, gdf, start_date, end_date, pollutant='Categoria_Geral', standard='CONAMA'):
     """
-    Cria uma sequência de mapas mostrando a evolução da qualidade do ar ao longo do tempo,
-    retornando diretamente as figuras Plotly
+    Cria uma sequência de mapas interativos para exibição sequencial,
+    sem depender da conversão para imagens estáticas
     """
     # Filtrar dados para o período
     period_data = df[(df['Data'] >= start_date) & (df['Data'] <= end_date)]
@@ -863,6 +673,7 @@ def create_sequential_maps(df, gdf, start_date, end_date, pollutant='Categoria_G
     maps = []
     for date in dates:
         with st.spinner(f"Gerando mapa para {date.strftime('%d/%m/%Y')}..."):
+            # Criar figura do mapa para esta data
             fig = create_air_quality_map(df, gdf, date, pollutant, standard)
             if fig:
                 maps.append({
@@ -986,8 +797,7 @@ if start_date > end_date:
 
 # Obter dados de qualidade do ar
 with st.spinner("🔄 Carregando dados de qualidade do ar..."):
-    # Tentar obter dados do CAMS primeiro, com fallback para simulação
-    air_data = get_cams_air_quality_data(selected_municipalities, start_date, end_date)
+    air_data = get_air_quality_data(selected_municipalities, start_date, end_date)
     
     # Classificar qualidade do ar
     air_data = classify_air_quality_conama(air_data)
@@ -1352,64 +1162,68 @@ with tab4:
                     standard
                 )
             
-    # Botão para gerar animação - com key única
-    if st.button("🎬 Gerar Animação Sequencial", type="primary", key="btn_animation_sequential"):
-        if (anim_end_date - anim_start_date).days > 14:
-            st.warning("Por favor, selecione um período de no máximo 14 dias para a animação.")
-        elif anim_start_date > anim_end_date:
-            st.error("A data inicial deve ser anterior à data final.")
-        else:
-            # Gerar mapas sequenciais
-            with st.spinner("Gerando sequência de mapas..."):
-                maps = create_sequential_maps(
-                    air_data, 
-                    ms_municipalities, 
-                    pd.to_datetime(anim_start_date), 
-                    pd.to_datetime(anim_end_date), 
-                    anim_pollutant, 
-                    standard
-                )
-            
             if maps and len(maps) > 0:
                 st.success(f"Sequência gerada com {len(maps)} mapas!")
                 
-                # Exibir mapas na interface
+                # Exibir animação
                 st.subheader(f"Evolução de {anim_pollutant if anim_pollutant != 'Categoria_Geral' else 'Qualidade do Ar'}")
                 
-                # Controles de navegação mais simples - com key única
-                date_selector = st.selectbox(
-                    "Selecione a data para visualização",
-                    options=range(len(maps)),
-                    format_func=lambda i: maps[i]['date'] if i < len(maps) else "",
-                    key="date_selector_animation"
-                )
+                # Container para exibição dos mapas
+                map_container = st.empty()
                 
-                # Mostrar o mapa selecionado
-                st.markdown(f"### Data: {maps[date_selector]['date']}")
-                st.plotly_chart(maps[date_selector]['figure'], use_container_width=True)
+                # Função para alternar entre os mapas automaticamente (simulando GIF)
+                def show_maps_sequence():
+                    # Primeiro ciclo
+                    for i, map_data in enumerate(maps):
+                        map_container.image(
+                            map_data['image'],
+                            caption=f"Data: {map_data['date']}",
+                            use_column_width=True
+                        )
+                        time.sleep(anim_speed)
+                    
+                    # Ciclo repetido (opcional)
+                    for i, map_data in enumerate(maps):
+                        map_container.image(
+                            map_data['image'],
+                            caption=f"Data: {map_data['date']}",
+                            use_column_width=True
+                        )
+                        time.sleep(anim_speed)
                 
-                # Opção para mostrar todos os mapas - com key única
-                if st.checkbox("Mostrar todos os mapas", value=False, key="chk_show_all_maps"):
-                    st.subheader("Todos os Mapas")
-                    for i, map_item in enumerate(maps):
-                        st.markdown(f"### Mapa {i+1}: {map_item['date']}")
-                        st.plotly_chart(map_item['figure'], use_container_width=True)
+                # Iniciar animação
+                show_maps_sequence()
+                
+                # Mostrar todos os mapas individuais
+                st.subheader("Mapas Individuais")
+                for i, map_data in enumerate(maps):
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        st.image(
+                            map_data['image'],
+                            caption=f"Data: {map_data['date']}",
+                            use_column_width=True
+                        )
+                    with col2:
+                        # Converter para base64 para permitir download
+                        b64 = base64.b64encode(map_data['image']).decode()
+                        href = f'<a href="data:image/png;base64,{b64}" download="mapa_{anim_pollutant}_{map_data["date"]}.png">⬇️ Baixar este mapa</a>'
+                        st.markdown(href, unsafe_allow_html=True)
             else:
-                st.warning("Não foi possível gerar a sequência de mapas. Verifique os dados e tente novamente.")
                 st.warning("Não foi possível gerar a sequência de mapas. Verifique os dados e tente novamente.")
 
 with tab5:
     st.header("📝 Relatórios de Qualidade do Ar")
     
-    # Selecionar município para relatório - com key única
+    # Selecionar município para relatório
     report_mun = st.selectbox(
         "Selecione um município para gerar relatório",
         options=selected_municipalities,
-        key="report_municipality_select"
+        key="report_municipality"
     )
     
-    # Gerar relatório - com key única
-    if st.button("🔍 Gerar Relatório Detalhado", key="btn_generate_report"):
+    # Gerar relatório
+    if st.button("🔍 Gerar Relatório Detalhado"):
         with st.spinner("Gerando relatório..."):
             report = generate_air_quality_report(air_data, report_mun, start_date, end_date, standard)
             
@@ -1513,7 +1327,7 @@ with tab5:
             
             st.markdown(recommendations.get(predominant_cat, "Não há recomendações disponíveis."))
             
-            # Opção para download do relatório em formato JSON - com key única
+            # Opção para download do relatório em formato JSON
             report_json = json.dumps(
                 {
                     'Município': report['Município'],
@@ -1546,8 +1360,7 @@ with tab5:
                 label="⬇️ Baixar Relatório (JSON)",
                 data=report_json.encode('utf-8'),
                 file_name=f"relatorio_{report_mun}_{start_date}_a_{end_date}.json",
-                mime="application/json",
-                key="btn_download_report_json"
+                mime="application/json"
             )
             
             # Opção para download do relatório em PDF (simulação)

@@ -669,7 +669,7 @@ def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard=
             showscale=True,
             visible=False,
             colorbar=dict(
-                title=f"{value_col} ({units.get(value_col, '')})",
+                title=f"{value_col}",
                 thickness=20,
                 len=0.5,
                 y=0.5,

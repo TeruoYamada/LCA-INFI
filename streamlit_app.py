@@ -1165,50 +1165,27 @@ with tab4:
             if maps and len(maps) > 0:
                 st.success(f"Sequência gerada com {len(maps)} mapas!")
                 
-                # Exibir animação
+                # Exibir mapas na interface
                 st.subheader(f"Evolução de {anim_pollutant if anim_pollutant != 'Categoria_Geral' else 'Qualidade do Ar'}")
                 
-                # Container para exibição dos mapas
-                map_container = st.empty()
+                # Controles de navegação
+                st.subheader("Visualização com Slider")
+                date_index = st.slider(
+                    "Selecione a data para visualização", 
+                    0, len(maps) - 1,
+                    format=lambda x: maps[x]['date'] if x < len(maps) else ""
+                )
                 
-                # Função para alternar entre os mapas automaticamente (simulando GIF)
-                def show_maps_sequence():
-                    # Primeiro ciclo
-                    for i, map_data in enumerate(maps):
-                        map_container.image(
-                            map_data['image'],
-                            caption=f"Data: {map_data['date']}",
-                            use_column_width=True
-                        )
-                        time.sleep(anim_speed)
-                    
-                    # Ciclo repetido (opcional)
-                    for i, map_data in enumerate(maps):
-                        map_container.image(
-                            map_data['image'],
-                            caption=f"Data: {map_data['date']}",
-                            use_column_width=True
-                        )
-                        time.sleep(anim_speed)
+                # Mostrar o mapa selecionado
+                st.markdown(f"### Data: {maps[date_index]['date']}")
+                st.plotly_chart(maps[date_index]['figure'], use_container_width=True)
                 
-                # Iniciar animação
-                show_maps_sequence()
-                
-                # Mostrar todos os mapas individuais
-                st.subheader("Mapas Individuais")
-                for i, map_data in enumerate(maps):
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        st.image(
-                            map_data['image'],
-                            caption=f"Data: {map_data['date']}",
-                            use_column_width=True
-                        )
-                    with col2:
-                        # Converter para base64 para permitir download
-                        b64 = base64.b64encode(map_data['image']).decode()
-                        href = f'<a href="data:image/png;base64,{b64}" download="mapa_{anim_pollutant}_{map_data["date"]}.png">⬇️ Baixar este mapa</a>'
-                        st.markdown(href, unsafe_allow_html=True)
+                # Opção para mostrar todos os mapas
+                if st.checkbox("Mostrar todos os mapas", value=False):
+                    st.subheader("Todos os Mapas")
+                    for i, map_item in enumerate(maps):
+                        st.markdown(f"### Mapa {i+1}: {map_item['date']}")
+                        st.plotly_chart(map_item['figure'], use_container_width=True)
             else:
                 st.warning("Não foi possível gerar a sequência de mapas. Verifique os dados e tente novamente.")
 

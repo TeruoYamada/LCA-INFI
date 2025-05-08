@@ -563,17 +563,19 @@ def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard=
                             f"{value_col}: {value:.2f}<br>" + \
                             f"Categoria: {row[cat_col]}"
             
-            # Adicionar marker
+            # Adicionar marker com rótulo de texto para o município
             fig.add_trace(go.Scattermapbox(
                 lat=[lat],
                 lon=[lon],
-                mode='markers',
+                mode='markers+text',
                 marker=dict(
                     size=15,
                     color=marker_color,
                     opacity=0.8
                 ),
                 text=row['Município'],
+                textposition="top center",
+                textfont=dict(size=10, color="black"),
                 hoverinfo='text',
                 hovertext=hover_text,
                 name=row['Município']
@@ -591,59 +593,119 @@ def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard=
             center={"lat": -20.5, "lon": -54.6},
         ),
         height=600,
-        margin={"r":0,"t":50,"l":0,"b":0},
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        )
+        margin={"r":0,"t":50,"l":0,"b":0}
     )
     
     # Adicionar legenda manualmente
     if is_category:
-        # Legenda para categorias
-        legend_categories = list(color_map.keys())
-        for i, category in enumerate(legend_categories):
-            fig.add_trace(go.Scattermapbox(
-                lat=[None],
-                lon=[None],
-                mode='markers',
-                marker=dict(size=10, color=color_map[category]),
-                name=category,
-                showlegend=True
-            ))
-    else:
-        # Legenda para valores numéricos (simplificada)
-        # Adicionar alguns pontos de referência na legenda
-        values = map_data[value_col]
-        breaks = np.linspace(vmin, vmax, 5)
+        # Adicionar legenda de categorias no canto do mapa
+        annotations = []
         
-        # Obter unidade para o poluente
-        units = {
-            'MP10': 'μg/m³',
-            'MP2.5': 'μg/m³',
-            'O3': 'μg/m³',
-            'NO2': 'μg/m³',
-            'SO2': 'μg/m³',
-            'CO': 'ppm',
-            'AOD': ''
-        }
-        unit = units.get(value_col, '')
+        # Título da legenda
+        annotations.append(dict(
+            x=0.01,
+            y=0.99,
+            xref="paper",
+            yref="paper",
+            text="<b>Legenda de Qualidade do Ar</b>",
+            showarrow=False,
+            font=dict(size=14),
+            bgcolor="white",
+            bordercolor="black",
+            borderwidth=1,
+            borderpad=4,
+            opacity=0.8
+        ))
         
-        for i, val in enumerate(breaks):
-            norm_val = i / (len(breaks) - 1)
-            color = px.colors.sample_colorscale(colorscale, [norm_val])[0]
+        # Entradas da legenda
+        legend_entries = [
+            ('Boa', 'Qualidade satisfatória, mínimo risco à saúde'),
+            ('Moderada', 'Aceitável, risco para grupos sensíveis'),
+            ('Ruim', 'Grupos sensíveis podem ter efeitos na saúde'),
+            ('Muito Ruim', 'Efeitos na saúde para toda população'),
+            ('Péssima', 'Alerta de saúde, riscos sérios')
+        ]
+        
+        # Adicionar cada entrada da legenda como anotação
+        for i, (cat, desc) in enumerate(legend_entries):
+            color = color_map[cat]
+            y_pos = 0.95 - (i+1) * 0.05
             
+            # Ícone colorido
+            annotations.append(dict(
+                x=0.01,
+                y=y_pos,
+                xref="paper",
+                yref="paper",
+                text=f"<span style='color:{color}'>■</span> <b>{cat}</b>: {desc}",
+                showarrow=False,
+                font=dict(size=12),
+                bgcolor="white",
+                bordercolor="white",
+                borderwidth=0,
+                borderpad=2,
+                opacity=0.8
+            ))
+        
+        fig.update_layout(annotations=annotations)
+        
+        # Adicionar também uma legenda interativa (clicável)
+        for category, color in color_map.items():
             fig.add_trace(go.Scattermapbox(
                 lat=[None],
                 lon=[None],
                 mode='markers',
                 marker=dict(size=10, color=color),
-                name=f"{val:.2f} {unit}",
+                name=category,
                 showlegend=True
             ))
+    else:
+        # Legenda para valores numéricos
+        # Adicionar uma colorbar
+        colorbar_trace = go.Choroplethmapbox(
+            z=[0],
+            locations=[""],
+            colorscale=colorscale,
+            showscale=True,
+            visible=False,
+            colorbar=dict(
+                title=f"{value_col} ({units.get(value_col, '')})",
+                thickness=20,
+                len=0.5,
+                y=0.5,
+                tickmode="array",
+                tickvals=np.linspace(vmin, vmax, 5),
+                ticktext=[f"{v:.2f}" for v in np.linspace(vmin, vmax, 5)]
+            )
+        )
+        fig.add_trace(colorbar_trace)
+        
+        # Adicionar anotações com explicações sobre o poluente
+        pollutant_desc = {
+            'MP10': "Material particulado inalável (diâmetro <10 μm)",
+            'MP2.5': "Material particulado fino (diâmetro <2.5 μm)",
+            'O3': "Ozônio troposférico (poluente secundário)",
+            'NO2': "Dióxido de nitrogênio (emissões veiculares)",
+            'SO2': "Dióxido de enxofre (combustão fóssil)",
+            'CO': "Monóxido de carbono (combustão incompleta)",
+            'AOD': "Profundidade óptica de aerossóis"
+        }
+        
+        # Adicionar descrição do poluente
+        fig.add_annotation(
+            x=0.5,
+            y=0.01,
+            xref="paper",
+            yref="paper",
+            text=f"<b>{value_col}:</b> {pollutant_desc.get(value_col, '')}",
+            showarrow=False,
+            font=dict(size=12),
+            bgcolor="white",
+            bordercolor="black",
+            borderwidth=1,
+            borderpad=4,
+            opacity=0.8
+        )
     
     return fig
 
@@ -1162,23 +1224,40 @@ with tab4:
                     standard
                 )
             
+    # Botão para gerar animação
+    if st.button("🎬 Gerar Animação Sequencial", type="primary"):
+        if (anim_end_date - anim_start_date).days > 14:
+            st.warning("Por favor, selecione um período de no máximo 14 dias para a animação.")
+        elif anim_start_date > anim_end_date:
+            st.error("A data inicial deve ser anterior à data final.")
+        else:
+            # Gerar mapas sequenciais
+            with st.spinner("Gerando sequência de mapas..."):
+                maps = create_sequential_maps(
+                    air_data, 
+                    ms_municipalities, 
+                    pd.to_datetime(anim_start_date), 
+                    pd.to_datetime(anim_end_date), 
+                    anim_pollutant, 
+                    standard
+                )
+            
             if maps and len(maps) > 0:
                 st.success(f"Sequência gerada com {len(maps)} mapas!")
                 
                 # Exibir mapas na interface
                 st.subheader(f"Evolução de {anim_pollutant if anim_pollutant != 'Categoria_Geral' else 'Qualidade do Ar'}")
                 
-                # Controles de navegação
-                st.subheader("Visualização com Slider")
-                date_index = st.slider(
-                    "Selecione a data para visualização", 
-                    0, len(maps) - 1,
-                    format=lambda x: maps[x]['date'] if x < len(maps) else ""
+                # Controles de navegação mais simples
+                date_selector = st.selectbox(
+                    "Selecione a data para visualização",
+                    options=range(len(maps)),
+                    format_func=lambda i: maps[i]['date'] if i < len(maps) else ""
                 )
                 
                 # Mostrar o mapa selecionado
-                st.markdown(f"### Data: {maps[date_index]['date']}")
-                st.plotly_chart(maps[date_index]['figure'], use_container_width=True)
+                st.markdown(f"### Data: {maps[date_selector]['date']}")
+                st.plotly_chart(maps[date_selector]['figure'], use_container_width=True)
                 
                 # Opção para mostrar todos os mapas
                 if st.checkbox("Mostrar todos os mapas", value=False):
@@ -1187,6 +1266,7 @@ with tab4:
                         st.markdown(f"### Mapa {i+1}: {map_item['date']}")
                         st.plotly_chart(map_item['figure'], use_container_width=True)
             else:
+                st.warning("Não foi possível gerar a sequência de mapas. Verifique os dados e tente novamente.")
                 st.warning("Não foi possível gerar a sequência de mapas. Verifique os dados e tente novamente.")
 
 with tab5:

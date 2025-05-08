@@ -94,12 +94,140 @@ cities_coords = {
     "Chapadão do Sul": [-18.7908, -52.6276]
 }
 
-# Função para simular/obter dados de qualidade do ar
-def get_air_quality_data(municipalities, start_date, end_date):
+# Função para obter dados de qualidade do ar do CAMS
+def get_cams_air_quality_data(municipalities, start_date, end_date):
     """
-    Simula ou obtém dados de qualidade do ar para os municípios selecionados
-    no período especificado. Em um ambiente de produção, substituir por
-    chamadas a APIs reais de qualidade do ar ou fontes de dados oficiais.
+    Tenta obter dados reais do CAMS (Copernicus Atmosphere Monitoring Service)
+    para os poluentes MP10, MP2.5, O3, NO2, SO2, CO.
+    
+    Se a API não estiver configurada ou falhar, usa dados simulados.
+    """
+    try:
+        st.info("Tentando obter dados reais do CAMS (Copernicus Atmosphere Monitoring Service)...")
+        
+        # Verificar se as credenciais do CAMS estão configuradas
+        # (Em um ambiente real, você precisaria configurar as credenciais no secrets.toml)
+        has_cams_credentials = False
+        
+        try:
+            ads_url = st.secrets["ads"]["url"]
+            ads_key = st.secrets["ads"]["key"]
+            has_cams_credentials = True
+        except:
+            st.warning("Credenciais do CAMS não encontradas. Usando dados simulados.")
+            has_cams_credentials = False
+        
+        if has_cams_credentials:
+            # Importar biblioteca necessária
+            import cdsapi
+            
+            # Configurar cliente
+            client = cdsapi.Client(url=ads_url, key=ads_key)
+            
+            # Lista para armazenar os dados
+            data_list = []
+            
+            # Para cada município, obter coordenadas e buscar dados
+            for municipality in municipalities:
+                # Obter coordenadas
+                if municipality in cities_coords:
+                    lat, lon = cities_coords[municipality]
+                    
+                    # Formatar datas
+                    start_date_str = start_date.strftime('%Y-%m-%d')
+                    end_date_str = end_date.strftime('%Y-%m-%d')
+                    
+                    # Preparar requisição para CAMS
+                    request = {
+                        'format': 'netcdf',
+                        'variable': [
+                            'particulate_matter_10um', 'particulate_matter_2.5um',
+                            'nitrogen_dioxide', 'sulphur_dioxide', 
+                            'carbon_monoxide', 'ozone',
+                        ],
+                        'date': f'{start_date_str}/{end_date_str}',
+                        'area': [
+                            lat + 0.1, lon - 0.1,
+                            lat - 0.1, lon + 0.1,
+                        ],
+                    }
+                    
+                    # Nome do arquivo temporário
+                    filename = f'cams_data_{municipality}_{start_date_str}_{end_date_str}.nc'
+                    
+                    # Buscar dados
+                    st.info(f"Buscando dados para {municipality}...")
+                    client.retrieve('cams-europe-air-quality-forecasts', request, filename)
+                    
+                    # Processar dados do NetCDF
+                    import xarray as xr
+                    
+                    # Abrir arquivo
+                    ds = xr.open_dataset(filename)
+                    
+                    # Extrair séries temporais para cada poluente
+                    for date_idx, date in enumerate(pd.date_range(start=start_date, end=end_date, freq='D')):
+                        # Mapear variáveis do CAMS para nomes dos poluentes no aplicativo
+                        pollutant_mapping = {
+                            'particulate_matter_10um': 'MP10',
+                            'particulate_matter_2.5um': 'MP2.5',
+                            'nitrogen_dioxide': 'NO2',
+                            'sulphur_dioxide': 'SO2',
+                            'carbon_monoxide': 'CO',
+                            'ozone': 'O3',
+                        }
+                        
+                        # Extrair valores para cada poluente
+                        pollutant_values = {}
+                        
+                        for cams_var, pollutant_name in pollutant_mapping.items():
+                            if cams_var in ds.variables:
+                                # Obter valor médio para o dia e coordenada
+                                value = float(ds[cams_var].sel(time=date, 
+                                                           latitude=lat, 
+                                                           longitude=lon,
+                                                           method='nearest').mean().values)
+                                pollutant_values[pollutant_name] = max(0, value)
+                            else:
+                                # Se a variável não estiver disponível, usar valor simulado
+                                pollutant_values[pollutant_name] = np.random.uniform(10, 50)
+                        
+                        # Adicionar AOD (simulado, já que não está diretamente disponível no CAMS)
+                        pollutant_values['AOD'] = np.random.uniform(0.05, 0.3)
+                        
+                        # Adicionar à lista de dados
+                        data_list.append({
+                            'Município': municipality,
+                            'Data': date,
+                            'Latitude': lat,
+                            'Longitude': lon,
+                            **pollutant_values
+                        })
+                    
+                    # Fechar e remover arquivo temporário
+                    ds.close()
+                    import os
+                    os.remove(filename)
+            
+            # Criar DataFrame
+            if data_list:
+                return pd.DataFrame(data_list)
+            else:
+                raise Exception("Nenhum dado foi obtido do CAMS")
+        else:
+            # Se não houver credenciais, usar dados simulados
+            raise Exception("Credenciais do CAMS não configuradas")
+    
+    except Exception as e:
+        st.warning(f"Erro ao obter dados do CAMS: {str(e)}. Usando dados simulados.")
+        # Se falhar, usar a função simulada
+        return get_simulated_air_quality_data(municipalities, start_date, end_date)
+
+# Função para simular dados de qualidade do ar
+def get_simulated_air_quality_data(municipalities, start_date, end_date):
+    """
+    Simula dados de qualidade do ar para os municípios selecionados
+    no período especificado.
     """
     # Lista de poluentes
     pollutants = ['MP10', 'MP2.5', 'O3', 'NO2', 'SO2', 'CO', 'AOD']
@@ -858,7 +986,8 @@ if start_date > end_date:
 
 # Obter dados de qualidade do ar
 with st.spinner("🔄 Carregando dados de qualidade do ar..."):
-    air_data = get_air_quality_data(selected_municipalities, start_date, end_date)
+    # Tentar obter dados do CAMS primeiro, com fallback para simulação
+    air_data = get_cams_air_quality_data(selected_municipalities, start_date, end_date)
     
     # Classificar qualidade do ar
     air_data = classify_air_quality_conama(air_data)

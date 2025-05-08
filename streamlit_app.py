@@ -650,7 +650,8 @@ def create_air_quality_map(df, gdf, date, pollutant='Categoria_Geral', standard=
 # Função para criar animação de mapa sequencial
 def create_sequential_maps(df, gdf, start_date, end_date, pollutant='Categoria_Geral', standard='CONAMA'):
     """
-    Cria uma sequência de mapas mostrando a evolução da qualidade do ar ao longo do tempo
+    Cria uma sequência de mapas interativos para exibição sequencial,
+    sem depender da conversão para imagens estáticas
     """
     # Filtrar dados para o período
     period_data = df[(df['Data'] >= start_date) & (df['Data'] <= end_date)]
@@ -672,13 +673,12 @@ def create_sequential_maps(df, gdf, start_date, end_date, pollutant='Categoria_G
     maps = []
     for date in dates:
         with st.spinner(f"Gerando mapa para {date.strftime('%d/%m/%Y')}..."):
+            # Criar figura do mapa para esta data
             fig = create_air_quality_map(df, gdf, date, pollutant, standard)
             if fig:
-                # Converter figura Plotly para imagem
-                img_bytes = fig.to_image(format="png", width=1000, height=600)
                 maps.append({
                     'date': date.strftime('%d/%m/%Y'),
-                    'image': img_bytes
+                    'figure': fig
                 })
     
     return maps

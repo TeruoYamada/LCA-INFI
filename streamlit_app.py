@@ -1497,8 +1497,8 @@ if __name__ == "__main__":
     **Última atualização**: {data_atual}
     """.format(data_atual=datetime.now().strftime('%d/%m/%Y %H:%M')))
 
-                df = forecast_data['aod550']
-                    hist_data = df[df['type'] == 'historical']
+    df = forecast_data['aod550']
+    hist_data = df[df['type'] == 'historical']
                     
                     if not hist_data.empty:
                         st.subheader("📊 Estatísticas")

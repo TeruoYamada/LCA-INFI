@@ -1,4 +1,233 @@
-import cdsapi
+def generate_aod_analysis():
+    dataset = "cams-global-atmospheric-composition-forecasts"
+    
+    # Obter lista de cidades
+    all_cities = get_ms_cities_coordinates()
+    
+    # Format dates and times correctly for ADS API
+    start_date_str = start_date.strftime('%Y-%m-%d')
+    end_date_str = end_date.strftime('%Y-%m-%d')
+    
+    # Create list of hours in the correct format
+    hours = []
+    current_hour = start_hour
+    while True:
+        hours.append(f"{current_hour:02d}:00")
+        if current_hour == end_hour:
+            break
+        current_hour = (current_hour + 3) % 24
+        if current_hour == start_hour:  # Evitar loop infinito
+            break
+    
+    # Se não tivermos horas definidas, usar padrão
+    if not hours:
+        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
+    
+    # Preparar request para API
+    request = {
+        'variable': ['total_aerosol_optical_depth_550nm'],
+        'date': f'{start_date_str}/{end_date_str}',
+        'time': hours,
+        'leadtime_hour': ['0', '24', '48', '72'],  # Incluir previsões de até 3 dias
+        'type': ['forecast'],
+        'format': 'netcdf',
+        'area': [lat_center + map_width/2, lon_center - map_width/2, 
+                lat_center - map_width/2, lon_center + map_width/2]
+    }
+    
+    filename = f'AOD550_{city}_{start_date}_to_{end_date}.nc'
+    
+    try:
+        with st.spinner('📥 Baixando dados do CAMS...'):
+            client.retrieve(dataset, request).download(filename)
+        
+        ds = xr.open_dataset(filename)
+        
+        # Verificar variáveis disponíveis
+        variable_names = list(ds.data_vars)
+        st.write(f"Variáveis disponíveis: {variable_names}")
+        
+        # Usar a variável 'aod550' encontrada nos dados
+        aod_var = next((var for var in variable_names if 'aod' in var.lower()), variable_names[0])
+        
+        st.write(f"Usando variável: {aod_var}")
+        da = ds[aod_var]
+        
+        # Verificar dimensões
+        st.write(f"Dimensões: {da.dims}")
+        
+        # Identificar dimensões temporais
+        time_dims = [dim for dim in da.dims if 'time' in dim or 'forecast' in dim]
+        
+        if not time_dims:
+            st.error("Não foi possível identificar dimensão temporal nos dados.")
+            return None
+        
+        # Extrair série temporal para o ponto central (cidade selecionada)
+        with st.spinner("Extraindo série temporal para o município..."):
+            df_timeseries = extract_point_timeseries(ds, lat_center, lon_center, var_name=aod_var)
+        
+        if df_timeseries.empty:
+            st.error("Não foi possível extrair série temporal para este local.")
+            return None
+        
+        # Gerar previsão para os próximos dias
+        with st.spinner("Gerando previsão de AOD..."):
+            df_forecast = predict_future_aod(df_timeseries, days=3)
+        
+        # Encontrar o município no geodataframe
+        municipality_shape = None
+        ms_shapes = load_ms_municipalities()
+        if not ms_shapes.empty:
+            city_shape = ms_shapes[ms_shapes['NM_MUN'] == city]
+            if not city_shape.empty:
+                municipality_shape = city_shape.iloc[0].geometry
+        
+        # --- Criação da animação ---
+        # Identificar frames disponíveis
+        if 'forecast_reference_time' in da.dims:
+            time_dim = 'forecast_reference_time'
+            frames = len(da[time_dim])
+        else:
+            time_dim = time_dims[0]
+            frames = len(da[time_dim])
+        
+        st.write(f"✅ Total de frames disponíveis: {frames}")
+        
+        if frames < 1:
+            st.error("Erro: Dados insuficientes para animação.")
+            return None
+        
+        # Determinar range de cores
+        vmin, vmax = float(da.min().values), float(da.max().values)
+        vmin = max(0, vmin - 0.05)
+        vmax = min(2, vmax + 0.05)  # AOD geralmente não ultrapassa 2
+        
+        # Criar figura
+        fig = plt.figure(figsize=(12, 8))
+        ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        
+        # Adicionar features básicas
+        ax.coastlines(resolution='10m')
+        ax.add_feature(cfeature.BORDERS.with_scale('10m'), linestyle=':')
+        ax.add_feature(cfeature.STATES.with_scale('10m'), linestyle=':')
+        
+        # Adicionar grid
+        gl = ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.5, linestyle='--')
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        # Definir extensão do mapa
+        ax.set_extent([lon_center - map_width/2, lon_center + map_width/2, 
+                      lat_center - map_width/2, lat_center + map_width/2], 
+                     crs=ccrs.PlateCarree())
+        
+        # Obter primeiro frame para inicializar
+        first_frame_data = None
+        first_frame_time = None
+        
+        if 'forecast_period' in da.dims and 'forecast_reference_time' in da.dims:
+            if len(da.forecast_period) > 0 and len(da.forecast_reference_time) > 0:
+                first_frame_data = da.isel(forecast_period=0, forecast_reference_time=0).values
+                first_frame_time = pd.to_datetime(ds.forecast_reference_time.values[0])
+            else:
+                first_frame_coords = {dim: 0 for dim in da.dims if len(da[dim]) > 0}
+                first_frame_data = da.isel(**first_frame_coords).values
+                first_frame_time = datetime.now()
+        else:
+            first_frame_data = da.isel({time_dim: 0}).values
+            first_frame_time = pd.to_datetime(da[time_dim].values[0])
+        
+        # Garantir formato 2D
+        if len(first_frame_data.shape) != 2:
+            st.error(f"Erro: Formato de dados inesperado. Shape: {first_frame_data.shape}")
+            return None
+        
+        # Criar mapa de cores
+        im = ax.pcolormesh(ds.longitude, ds.latitude, first_frame_data, 
+                          cmap=colormap, vmin=vmin, vmax=vmax)
+        
+        # Adicionar barra de cores
+        cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+        cbar.set_label('AOD 550nm')
+        
+        # Adicionar título inicial
+        title = ax.set_title(f'AOD 550nm em {city} - {first_frame_time}', fontsize=14)
+        
+        # Adicionar shape do município selecionado se disponível
+        if municipality_shape:
+            try:
+                if hasattr(municipality_shape, '__geo_interface__'):
+                    ax.add_geometries([municipality_shape], crs=ccrs.PlateCarree(), 
+                                     facecolor='none', edgecolor='red', linewidth=2, zorder=3)
+                    
+                # Adicionar rótulo do município
+                ax.text(lon_center, lat_center, city, fontsize=12, fontweight='bold', 
+                       ha='center', va='center', color='red',
+                       bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'),
+                       transform=ccrs.PlateCarree(), zorder=4)
+            except Exception as e:
+                st.warning(f"Não foi possível desenhar o shape do município: {str(e)}")
+        
+        # Função de animação
+        def animate(i):
+            try:
+                # Selecionar frame de acordo com a estrutura dos dados
+                frame_data = None
+                frame_time = None
+                
+                if 'forecast_period' in da.dims and 'forecast_reference_time' in da.dims:
+                    # Determinar índices válidos
+                    fp_idx = min(0, len(da.forecast_period)-1)
+                    frt_idx = min(i, len(da.forecast_reference_time)-1)
+                    
+                    frame_data = da.isel(forecast_period=fp_idx, forecast_reference_time=frt_idx).values
+                    frame_time = pd.to_datetime(ds.forecast_reference_time.values[frt_idx])
+                else:
+                    # Selecionar pelo índice na dimensão de tempo
+                    t_idx = min(i, len(da[time_dim])-1)
+                    frame_data = da.isel({time_dim: t_idx}).values
+                    frame_time = pd.to_datetime(da[time_dim].values[t_idx])
+                
+                # Atualizar dados
+                im.set_array(frame_data.ravel())
+                
+                # Atualizar título com timestamp
+                title.set_text(f'AOD 550nm em {city} - {frame_time}')
+                
+                return [im, title]
+            except Exception as e:
+                st.error(f"Erro no frame {i}: {str(e)}")
+                return [im, title]
+        
+        # Limitar número de frames para evitar problemas
+        actual_frames = min(frames, 20)  # Máximo de 20 frames
+        
+        # Criar animação
+        ani = animation.FuncAnimation(fig, animate, frames=actual_frames, 
+                                      interval=animation_speed, blit=True)
+        
+        # Salvar animação
+        gif_filename = f'AOD550_{city}_{start_date}_to_{end_date}.gif'
+        
+        with st.spinner('💾 Salvando animação...'):
+            ani.save(gif_filename, writer=animation.PillowWriter(fps=2))
+        
+        plt.close(fig)
+        
+        return {
+            'animation': gif_filename,
+            'timeseries': df_timeseries,
+            'forecast': df_forecast,
+            'dataset': ds,
+            'variable': aod_var
+        }
+    
+    except Exception as e:
+        st.error(f"❌ Erro ao processar os dados: {str(e)}")
+        st.write("Detalhes da requisição:")
+        st.write(request)
+        return Noneimport cdsapi
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt

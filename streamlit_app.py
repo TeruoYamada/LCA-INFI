@@ -760,4 +760,4 @@ def generate_pollution_alert():
             # Exibir tabela estilizada
             st.dataframe(format_aod_table(top_cities), use_container_width=True)
             
-        
+            #

@@ -115,34 +115,63 @@ def load_ms_municipalities():
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Adicionar mapa interativo com todos os municípios
+            # Exibir mapa interativo com todos os municípios
             st.subheader("🌐 Mapa Interativo - Previsão por Município")
             
             try:
-                # Criar GeoDataFrame para visualização
-                ms_shapes = load_ms_municipalities()
+                # Criar dados para o mapa
+                cities_coords = get_ms_cities_coordinates()
                 
-                if not ms_shapes.empty:
-                    # Mesclar dados de previsão com shapes
-                    merged_gdf = ms_shapes.merge(alerts_df, left_on='NM_MUN', right_on='cidade', how='left')
+                # Preparar dados para o mapa
+                map_data = []
+                
+                for city, aod_data in zip(alerts_df['cidade'], alerts_df['aod_maximo']):
+                    if city in cities_coords:
+                        lat, lon = cities_coords[city]
+                        map_data.append({
+                            'lat': lat,
+                            'lon': lon,
+                            'name': city,
+                            'aod': float(alerts_df[alerts_df['cidade'] == city]['aod_maximo'].values[0])
+                        })
+                
+                # Converter para DataFrame
+                map_df = pd.DataFrame(map_data)
+                
+                if not map_df.empty:
+                    # Normalizar valores de AOD para tamanho dos pontos (entre 50 e 150)
+                    max_aod = map_df['aod'].max()
+                    min_aod = map_df['aod'].min()
                     
-                    # Converter para formato adequado para st.map
-                    map_data = pd.DataFrame({
-                        'latitude': [cities_coords[city][0] for city in alerts_df['cidade'] if city in cities_coords],
-                        'longitude': [cities_coords[city][1] for city in alerts_df['cidade'] if city in cities_coords],
-                        'aod': alerts_df['aod_maximo'],
-                        'city': alerts_df['cidade'],
-                        'date': alerts_df['data'],
-                        'category': alerts_df['categoria']
-                    })
+                    if max_aod > min_aod:  # Evitar divisão por zero
+                        map_df['size'] = 50 + (map_df['aod'] - min_aod) / (max_aod - min_aod) * 100
+                    else:
+                        map_df['size'] = 75  # Tamanho padrão
                     
-                    # Mostrar mapa
-                    st.map(map_data, latitude='latitude', longitude='longitude', color='category', size='aod')
+                    # Criar cores baseadas em categorias
+                    map_df['color'] = map_df['aod'].apply(lambda x: 
+                        'green' if x < 0.1 else 
+                        'yellow' if x < 0.2 else 
+                        'orange' if x < 0.5 else 
+                        'red')
+                    
+                    # Centralizar no estado de MS
+                    center_lat = -20.5
+                    center_lon = -54.5
+                    
+                    # Criar mapa
+                    st.map(map_df, 
+                          latitude='lat', 
+                          longitude='lon',
+                          size='size',
+                          color='color',
+                          zoom=6)
                 else:
-                    st.warning("Não foi possível carregar os shapes dos municípios para o mapa interativo.")
+                    st.warning("Dados insuficientes para criar o mapa interativo.")
             
             except Exception as e:
                 st.warning(f"Não foi possível criar o mapa interativo: {str(e)}")
+                st.write("Detalhes do erro:", e)
              Fallback: criar geodataframe com todos os municípios de MS
             # Lista completa dos 79 municípios de MS com aproximações de coordenadas
             data = {
@@ -205,35 +234,90 @@ def load_ms_municipalities():
 
 # Dicionário com coordenadas de todas as cidades do MS
 def get_ms_cities_coordinates():
-    # Usar os dados dos municípios para extrair coordenadas
-    ms_shapes = load_ms_municipalities()
-    
-    if ms_shapes.empty:
-        # Fallback para coordenadas padrão caso os shapes não estejam disponíveis
-        return {
-            "Campo Grande": [-20.4697, -54.6201],
-            "Dourados": [-22.2231, -54.8120],
-            "Três Lagoas": [-20.7849, -51.7005],
-            "Corumbá": [-19.0082, -57.6510],
-            "Ponta Porã": [-22.5334, -55.7271]
-        }
-    
-    # Criar dicionário de coordenadas a partir do centroide de cada município
-    cities = {}
-    for _, row in ms_shapes.iterrows():
-        try:
-            centroid = row.geometry.centroid
-            cities[row['NM_MUN']] = [centroid.y, centroid.x]  # latitude, longitude
-        except:
-            # Em caso de erro, usar o centroide do envelope (bounding box)
-            try:
-                bbox = row.geometry.bounds
-                lat = (bbox[1] + bbox[3]) / 2
-                lon = (bbox[0] + bbox[2]) / 2
-                cities[row['NM_MUN']] = [lat, lon]
-            except:
-                # Ignorar se não conseguir extrair coordenadas
-                pass
+    """Retorna um dicionário com as coordenadas de todos os municípios de MS."""
+    # Lista completa dos 79 municípios de MS com coordenadas aproximadas
+    # Estas coordenadas são aproximadas e podem ser refinadas
+    cities = {
+        'Água Clara': [-20.4653, -52.8941],
+        'Alcinópolis': [-18.3215, -53.7041],
+        'Amambai': [-23.1022, -55.2246],
+        'Anastácio': [-20.4813, -55.8099],
+        'Anaurilândia': [-22.1855, -52.7179],
+        'Angélica': [-22.1527, -54.0675],
+        'Antônio João': [-22.1923, -55.9507],
+        'Aparecida do Taboado': [-20.0873, -51.0966],
+        'Aquidauana': [-20.4697, -55.7950],
+        'Aral Moreira': [-22.9346, -55.6384],
+        'Bandeirantes': [-19.9091, -54.3585],
+        'Bataguassu': [-21.7153, -52.4220],
+        'Batayporã': [-22.2940, -53.2708],
+        'Bela Vista': [-22.1064, -56.5261],
+        'Bodoquena': [-20.5375, -56.7151],
+        'Bonito': [-21.1275, -56.4836],
+        'Brasilândia': [-21.2554, -52.0377],
+        'Caarapó': [-22.6365, -54.8224],
+        'Camapuã': [-19.5344, -54.0413],
+        'Campo Grande': [-20.4697, -54.6201],
+        'Caracol': [-22.0280, -57.0290],
+        'Cassilândia': [-19.1119, -51.7348],
+        'Chapadão do Sul': [-18.7907, -52.6265],
+        'Corguinho': [-19.8341, -54.8308],
+        'Coronel Sapucaia': [-23.2624, -55.7407],
+        'Corumbá': [-19.0082, -57.6510],
+        'Costa Rica': [-18.5425, -53.1355],
+        'Coxim': [-18.5122, -54.7687],
+        'Deodápolis': [-22.2827, -54.1663],
+        'Dois Irmãos do Buriti': [-20.7233, -55.2991],
+        'Douradina': [-22.0407, -54.6139],
+        'Dourados': [-22.2231, -54.8120],
+        'Eldorado': [-23.7938, -54.2834],
+        'Fátima do Sul': [-22.3789, -54.5162],
+        'Figueirão': [-18.6782, -53.6450],
+        'Glória de Dourados': [-22.8057, -54.2316],
+        'Guia Lopes da Laguna': [-21.4521, -55.3945],
+        'Iguatemi': [-23.6802, -54.5665],
+        'Inocência': [-19.7355, -51.9293],
+        'Itaporã': [-22.0771, -54.7941],
+        'Itaquiraí': [-23.4692, -54.1867],
+        'Ivinhema': [-22.3055, -53.8127],
+        'Japorã': [-23.8949, -54.4037],
+        'Jaraguari': [-20.1391, -54.3991],
+        'Jardim': [-21.4744, -56.1508],
+        'Jateí': [-22.4821, -54.3023],
+        'Juti': [-22.8596, -54.6060],
+        'Ladário': [-19.0087, -57.5967],
+        'Laguna Carapã': [-22.5466, -54.6468],
+        'Maracaju': [-21.6131, -54.9612],
+        'Miranda': [-20.2379, -56.3801],
+        'Mundo Novo': [-23.9415, -54.2775],
+        'Naviraí': [-23.0624, -54.1949],
+        'Nioaque': [-21.1423, -55.8313],
+        'Nova Alvorada do Sul': [-21.4649, -54.3839],
+        'Nova Andradina': [-22.2320, -53.3419],
+        'Novo Horizonte do Sul': [-22.6679, -53.8002],
+        'Paraíso das Águas': [-19.0518, -52.9695],
+        'Paranaíba': [-20.0008, -51.1866],
+        'Paranhos': [-23.8940, -55.4291],
+        'Pedro Gomes': [-18.0869, -54.5511],
+        'Ponta Porã': [-22.5334, -55.7271],
+        'Porto Murtinho': [-21.6983, -57.8835],
+        'Ribas do Rio Pardo': [-20.4444, -53.7589],
+        'Rio Brilhante': [-21.8028, -54.5432],
+        'Rio Negro': [-19.4510, -54.9860],
+        'Rio Verde de Mato Grosso': [-18.9188, -54.8382],
+        'Rochedo': [-19.9513, -54.8920],
+        'Santa Rita do Pardo': [-21.1408, -53.3083],
+        'São Gabriel do Oeste': [-19.3944, -54.5608],
+        'Selvíria': [-20.3672, -51.4188],
+        'Sete Quedas': [-23.9656, -54.7143],
+        'Sidrolândia': [-20.9154, -54.9696],
+        'Sonora': [-17.5683, -54.7548],
+        'Tacuru': [-23.6323, -55.0137],
+        'Taquarussu': [-22.4993, -53.3521],
+        'Terenos': [-20.4712, -54.8643],
+        'Três Lagoas': [-20.7849, -51.7005],
+        'Vicentina': [-22.4099, -54.4149]
+    }
     
     return cities
 
@@ -676,4 +760,4 @@ def generate_pollution_alert():
             # Exibir tabela estilizada
             st.dataframe(format_aod_table(top_cities), use_container_width=True)
             
-            #
+        

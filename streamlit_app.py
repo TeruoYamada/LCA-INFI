@@ -1,3 +1,37 @@
+def generate_aod_analysis():
+    dataset = "cams-global-atmospheric-composition-forecasts"
+    
+    # Obter lista de cidades
+    all_cities = get_ms_cities_coordinates()
+    
+    # Format dates and times correctly for ADS API
+    start_date_str = start_date.strftime('%Y-%m-%d')
+    end_date_str = end_date.strftime('%Y-%m-%d')
+    
+    # Create list of hours in the correct format
+    hours = []
+    current_hour = start_hour
+    while True:
+        hours.append(f"{current_hour:02d}:00")
+        if current_hour == end_hour:
+            break
+        current_hour = (current_hour + 3) % 24
+        if current_hour == start_hour:  # Evitar loop infinito
+            break
+    
+    # Se não tivermos horas definidas, usar padrão
+    if not hours:
+        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
+    
+    # Preparar request para API
+    request = {
+        'variable': ['total_aerosol_optical_depth_550nm'],
+        'date': f'{start_date_str}/{end_date_str}',
+        'time': hours,
+        'leadtime_hour': ['0', '24', '48', '72'],  # Incluir previsões de até 3 dias
+        'type': ['forecast'],
+        'format': 'netcdf',
+        'area': [lat_center +import cdsapi
 import xarray as xr
 import numpy as np
 import matplotlib.pyplot as plt

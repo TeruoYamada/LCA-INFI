@@ -188,6 +188,12 @@ with st.sidebar.expander("Configurações da Visualização"):
 
 # Botão para iniciar análise (movido para a sidebar para maior visibilidade)
 if st.sidebar.button("🎞️ Gerar Análise Completa", type="primary"):
+    # Executar análise e obter resultados
+    results = generate_aod_analysis()
+    
+    if results:
+        # Layout com abas para diferentes visualizações
+        tab1, tab2, tab3 = st.tabs(["📊 Análise do Município", "⚠️ Alerta de Poluição para MS", "🗺️ Mapa e Animação"])
 
 # Função para extrair valores de AOD para um ponto específico
 def extract_point_timeseries(ds, lat, lon, var_name='aod550'):

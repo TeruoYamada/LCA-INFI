@@ -186,6 +186,9 @@ with st.sidebar.expander("Configurações da Visualização"):
     colormap = st.selectbox("Paleta de Cores", 
                            ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis"])
 
+# Botão para iniciar análise (movido para a sidebar para maior visibilidade)
+if st.sidebar.button("🎞️ Gerar Análise Completa", type="primary"):
+
 # Função para extrair valores de AOD para um ponto específico
 def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
     """Extrai série temporal de um ponto específico do dataset."""

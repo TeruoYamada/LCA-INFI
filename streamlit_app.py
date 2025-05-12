@@ -154,6 +154,273 @@ para municípios de Mato Grosso do Sul. Os dados são obtidos em tempo real do C
 Monitoring Service).
 """)
 
+# Botão principal logo após o texto introdutório
+if st.button("🎞️ Gerar Análise Completa", type="primary", use_container_width=True):
+    try:
+        # Executar análise e obter resultados
+        results = generate_aod_analysis()
+        
+        if results:
+            # Layout com abas para diferentes visualizações
+            tab1, tab2, tab3 = st.tabs(["📊 Análise do Município", "⚠️ Alerta de Poluição para MS", "🗺️ Mapa e Animação"])
+            
+            with tab3:
+                st.subheader("🎬 Animação de AOD 550nm")
+                st.image(results['animation'], caption=f"AOD 550nm em {city} ({start_date} a {end_date})")
+                
+                # Adicionar opções para baixar
+                with open(results['animation'], "rb") as file:
+                    btn = st.download_button(
+                        label="⬇️ Baixar Animação (GIF)",
+                        data=file,
+                        file_name=f"AOD_{city}_{start_date}_to_{end_date}.gif",
+                        mime="image/gif"
+                    )
+            
+            with tab1:
+                st.subheader("📊 Série Temporal e Previsão")
+                
+                # Layout de duas colunas
+                col1, col2 = st.columns([3, 2])
+                
+                with col1:
+                    # Preparar dados para gráfico
+                    df_combined = results['forecast']
+                    
+                    # Criar gráfico
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    
+                    # Dados históricos
+                    hist_data = df_combined[df_combined['type'] == 'historical']
+                    ax.plot(hist_data['time'], hist_data['aod'], 
+                           marker='o', linestyle='-', color='blue', label='Observado')
+                    
+                    # Dados de previsão
+                    forecast_data = df_combined[df_combined['type'] == 'forecast']
+                    ax.plot(forecast_data['time'], forecast_data['aod'], 
+                           marker='x', linestyle='--', color='red', label='Previsão')
+                    
+                    # Formatar eixos
+                    ax.set_title(f'AOD 550nm em {city}: Valores Observados e Previstos', fontsize=14)
+                    ax.set_xlabel('Data/Hora', fontsize=12)
+                    ax.set_ylabel('AOD 550nm', fontsize=12)
+                    
+                    # Formatar datas no eixo x
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+                    plt.xticks(rotation=45)
+                    
+                    # Adicionar legenda e grade
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Adicionar faixa de qualidade do ar
+                    ax.axhspan(0, 0.1, alpha=0.2, color='green', label='Boa')
+                    ax.axhspan(0.1, 0.2, alpha=0.2, color='yellow', label='Moderada')
+                    ax.axhspan(0.2, 0.5, alpha=0.2, color='orange', label='Insalubre')
+                    ax.axhspan(0.5, 2.0, alpha=0.2, color='red', label='Perigosa')
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                
+                with col2:
+                    # Estatísticas
+                    st.subheader("📈 Estatísticas de AOD")
+                    
+                    # Calcular estatísticas
+                    if not hist_data.empty:
+                        curr_aod = hist_data['aod'].iloc[-1]
+                        max_aod = hist_data['aod'].max()
+                        mean_aod = hist_data['aod'].mean()
+                        
+                        # Categorizar qualidade do ar baseado no AOD
+                        def aod_category(value):
+                            if value < 0.1:
+                                return "Boa", "green"
+                            elif value < 0.2:
+                                return "Moderada", "orange"
+                            elif value < 0.5:
+                                return "Insalubre para grupos sensíveis", "red"
+                            else:
+                                return "Perigosa", "darkred"
+                        
+                        current_cat, current_color = aod_category(curr_aod)
+                        
+                        # Mostrar métricas
+                        col_a, col_b, col_c = st.columns(3)
+                        col_a.metric("AOD Atual", f"{curr_aod:.3f}")
+                        col_b.metric("AOD Máximo", f"{max_aod:.3f}")
+                        col_c.metric("AOD Médio", f"{mean_aod:.3f}")
+                        
+                        # Mostrar categoria da qualidade do ar
+                        st.markdown(f"""
+                        <div style="padding:10px; border-radius:5px; background-color:{current_color}; color:white; text-align:center; margin:10px 0;">
+                        <h3 style="margin:0;">Qualidade do Ar: {current_cat}</h3>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Previsão para os próximos dias
+                        if not forecast_data.empty:
+                            st.subheader("🔮 Previsão para os próximos dias")
+                            
+                            # Agrupar por dia
+                            forecast_data['date'] = forecast_data['time'].dt.date
+                            daily_forecast = forecast_data.groupby('date')['aod'].mean().reset_index()
+                            
+                            for i, row in daily_forecast.iterrows():
+                                day_cat, day_color = aod_category(row['aod'])
+                                st.markdown(f"""
+                                <div style="padding:5px; border-radius:3px; background-color:{day_color}; color:white; margin:2px 0;">
+                                <b>{row['date'].strftime('%d/%m/%Y')}:</b> AOD médio previsto: {row['aod']:.3f} - {day_cat}
+                                </div>
+                                """, unsafe_allow_html=True)
+                    
+                    # Exportar dados
+                    st.subheader("💾 Exportar Dados")
+                    csv = df_combined.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Baixar Dados (CSV)",
+                        data=csv,
+                        file_name=f"AOD_data_{city}_{start_date}_to_{end_date}.csv",
+                        mime="text/csv",
+                    )
+            
+            # NOVA ABA: Alerta de Poluição para MS
+            with tab2:
+                st.subheader("⚠️ Alerta de Poluição para Municípios de MS")
+                
+                # Verificar se temos os dados de todas as cidades
+                if 'top_pollution' in results and not results['top_pollution'].empty:
+                    top_cities = results['top_pollution'].head(20)  # Pegar as 20 primeiras
+                    
+                    # Criar uma tabela formatada e colorida com as cidades mais críticas
+                    st.markdown("### 🔴 Top 20 Municípios com Maior Previsão de AOD")
+                    
+                    # Adicionar legenda de cores
+                    st.markdown("""
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: darkred; margin-right: 5px;"></div>
+                            <span>AOD ≥ 0.5 (Muito Alto)</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: red; margin-right: 5px;"></div>
+                            <span>AOD ≥ 0.2 (Alto)</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: orange; margin-right: 5px;"></div>
+                            <span>AOD ≥ 0.1 (Moderado)</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: green; margin-right: 5px;"></div>
+                            <span>AOD < 0.1 (Baixo)</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Renomear colunas para exibição
+                    top_cities_display = top_cities.rename(columns={
+                        'cidade': 'Município', 
+                        'aod_max': 'AOD Máximo', 
+                        'data_max': 'Data do Pico',
+                        'nivel': 'Nível de Alerta'
+                    })
+                    
+                    # Função para colorir as linhas baseado no valor de AOD
+                    def highlight_aod(val):
+                        try:
+                            aod = float(val['AOD Máximo'])
+                            if aod >= 0.5:
+                                return ['background-color: darkred; color: white'] * len(val)
+                            elif aod >= 0.2:
+                                return ['background-color: red; color: white'] * len(val)
+                            elif aod >= 0.1:
+                                return ['background-color: orange; color: black'] * len(val)
+                            else:
+                                return ['background-color: green; color: white'] * len(val)
+                        except:
+                            return [''] * len(val)
+                    
+                    # Exibir tabela formatada
+                    st.dataframe(
+                        top_cities_display.style.apply(highlight_aod, axis=1),
+                        use_container_width=True
+                    )
+                    
+                    # Adicionar um aviso se houver cidades com nível alto ou muito alto
+                    high_risk_cities = top_cities[top_cities['aod_max'] >= 0.2]
+                    
+                    if not high_risk_cities.empty:
+                        st.warning(f"""
+                        ### ⚠️ ALERTA DE POLUIÇÃO ATMOSFÉRICA
+                        
+                        Detectamos previsão de níveis elevados de AOD (≥ 0.2) para {len(high_risk_cities)} municípios nos próximos 5 dias!
+                        
+                        Os municípios mais críticos são:
+                        - **{high_risk_cities.iloc[0]['cidade']}**: AOD {high_risk_cities.iloc[0]['aod_max']:.3f} em {high_risk_cities.iloc[0]['data_max']}
+                        - **{high_risk_cities.iloc[1]['cidade'] if len(high_risk_cities) > 1 else ''}**: AOD {high_risk_cities.iloc[1]['aod_max']:.3f if len(high_risk_cities) > 1 else 0} em {high_risk_cities.iloc[1]['data_max'] if len(high_risk_cities) > 1 else ''}
+                        - **{high_risk_cities.iloc[2]['cidade'] if len(high_risk_cities) > 2 else ''}**: AOD {high_risk_cities.iloc[2]['aod_max']:.3f if len(high_risk_cities) > 2 else 0} em {high_risk_cities.iloc[2]['data_max'] if len(high_risk_cities) > 2 else ''}
+                        
+                        Recomenda-se atenção especial a pessoas com problemas respiratórios nestas localidades.
+                        """)
+                    
+                    # Exportar dados da tabela
+                    csv_top_cities = top_cities.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Baixar Tabela de Alerta (CSV)",
+                        data=csv_top_cities,
+                        file_name=f"AOD_alerta_MS_{start_date}_to_{end_date}.csv",
+                        mime="text/csv",
+                    )
+                    
+                    # Criar gráfico de barras com as 10 cidades mais críticas
+                    st.subheader("📊 Previsão de AOD Máximo - Top 10 Municípios")
+                    
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    
+                    # Selecionar top 10
+                    top10 = top_cities.head(10)
+                    
+                    # Criar barras com cores baseadas no nível de AOD
+                    colors = []
+                    for aod in top10['aod_max']:
+                        if aod >= 0.5:
+                            colors.append('darkred')
+                        elif aod >= 0.2:
+                            colors.append('red')
+                        elif aod >= 0.1:
+                            colors.append('orange')
+                        else:
+                            colors.append('green')
+                    
+                    # Plotar gráfico
+                    bars = ax.bar(top10['cidade'], top10['aod_max'], color=colors)
+                    
+                    # Adicionar rótulos
+                    for bar in bars:
+                        height = bar.get_height()
+                        ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                                f'{height:.3f}', ha='center', va='bottom', 
+                                fontsize=10, rotation=0)
+                    
+                    # Formatação do gráfico
+                    ax.set_title('Top 10 Municípios com Maior Previsão de AOD', fontsize=14)
+                    ax.set_xlabel('Município', fontsize=12)
+                    ax.set_ylabel('AOD Máximo Previsto', fontsize=12)
+                    ax.set_ylim(0, max(top10['aod_max']) * 1.2)  # Ajustar limite do eixo Y
+                    ax.axhline(y=0.5, linestyle='--', color='darkred', alpha=0.7)
+                    ax.axhline(y=0.2, linestyle='--', color='red', alpha=0.7)
+                    ax.axhline(y=0.1, linestyle='--', color='orange', alpha=0.7)
+                    plt.xticks(rotation=45, ha='right')
+                    plt.tight_layout()
+                    
+                    st.pyplot(fig)
+                else:
+                    st.error("❌ Não foi possível obter dados de previsão para os municípios de MS.")
+                    st.info("Tente novamente com um período diferente ou verifique a conexão com a API do CAMS.")
+    except Exception as e:
+        st.error(f"❌ Ocorreu um erro ao gerar a análise: {str(e)}")
+        st.write("Por favor, verifique os parâmetros e tente novamente.")
+
 # Carregar shapefiles dos municípios do MS
 with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
@@ -186,14 +453,14 @@ with st.sidebar.expander("Configurações da Visualização"):
     colormap = st.selectbox("Paleta de Cores", 
                            ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis"])
 
-# Botão para iniciar análise (movido para a sidebar para maior visibilidade)
-if st.sidebar.button("🎞️ Gerar Análise Completa", type="primary"):
-    # Executar análise e obter resultados
-    results = generate_aod_analysis()
-    
-    if results:
-        # Layout com abas para diferentes visualizações
-        tab1, tab2, tab3 = st.tabs(["📊 Análise do Município", "⚠️ Alerta de Poluição para MS", "🗺️ Mapa e Animação"])
+# Remover botão da barra lateral para evitar duplicidade
+# if st.sidebar.button("🎞️ Gerar Análise Completa", type="primary"):
+#     # Executar análise e obter resultados
+#     results = generate_aod_analysis()
+#     
+#     if results:
+#         # Layout com abas para diferentes visualizações
+#         tab1, tab2, tab3 = st.tabs(["📊 Análise do Município", "⚠️ Alerta de Poluição para MS", "🗺️ Mapa e Animação"])
 
 # Função para extrair valores de AOD para um ponto específico
 def extract_point_timeseries(ds, lat, lon, var_name='aod550'):

@@ -16,6 +16,12 @@ from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 from sklearn.linear_model import LinearRegression
 import matplotlib.dates as mdates
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from scipy import signal
+from scipy.optimize import curve_fit
+import warnings
+warnings.filterwarnings('ignore')
 
 # Configuração inicial da página
 st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
@@ -856,6 +862,12 @@ with st.spinner("Carregando shapes dos municípios..."):
 # Sidebar para configurações
 st.sidebar.header("⚙️ Configurações")
 
+st.sidebar.subheader("Método de Previsão")
+prediction_method = st.sidebar.selectbox(
+    "Selecione o método de previsão",
+    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
+    index=0  # ensemble como padrão)
+
 # Seleção de cidade com os shapes disponíveis
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
 if not available_cities:
@@ -863,13 +875,6 @@ if not available_cities:
 
 city = st.sidebar.selectbox("Selecione o município", available_cities)
 lat_center, lon_center = cities[city]
-
-# Na sidebar, adicionar:
-st.sidebar.subheader("Método de Previsão")
-prediction_method = st.sidebar.selectbox(
-    "Selecione o método de previsão",
-    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
-    index=0  # ensemble como padrão)
 
 # No processamento:
 df_forecast = predict_future_aod_advanced(df_timeseries, days=5, method=prediction_method)

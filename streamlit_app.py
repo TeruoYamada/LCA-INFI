@@ -161,6 +161,70 @@ Este sistema utiliza **múltiplos métodos de previsão estatística** para aná
 de Aerossóis (AOD) a 550nm. Inclui desde regressão linear até ensemble de modelos de machine learning.
 """)
 
+# === SEÇÃO DE SELEÇÃO DE MÉTODO DE PREVISÃO ===
+st.markdown("---")
+st.subheader("🔮 Escolha o Método de Previsão")
+
+method_options = {
+    'ensemble': {'name': '🎯 Ensemble', 'desc': 'Combina todos os métodos (Recomendado)'},
+    'random_forest': {'name': '🌳 Random Forest', 'desc': 'Machine learning avançado'},
+    'seasonal': {'name': '🔄 Sazonal', 'desc': 'Detecta padrões diários'},
+    'polynomial': {'name': '📐 Polinomial', 'desc': 'Tendências não-lineares'},
+    'exponential_smoothing': {'name': '🌊 Exponencial', 'desc': 'Pondera valores recentes'},
+    'moving_average': {'name': '📊 Média Móvel', 'desc': 'Média dos últimos valores'},
+    'linear_regression': {'name': '📈 Linear', 'desc': 'Regressão linear simples'}
+}
+
+# Adicionar botões de seleção rápida para métodos populares
+st.markdown("**🚀 Seleção Rápida:**")
+col_btn1, col_btn2, col_btn3, col_btn4, col_space = st.columns([1.5, 1.5, 1.5, 1.5, 2])
+
+with col_btn1:
+    if st.button("🎯 Ensemble", help="Recomendado para máxima precisão", use_container_width=True):
+        st.session_state.forecast_method = 'ensemble'
+
+with col_btn2:
+    if st.button("🌳 Random Forest", help="Machine Learning avançado", use_container_width=True):
+        st.session_state.forecast_method = 'random_forest'
+
+with col_btn3:
+    if st.button("🔄 Sazonal", help="Detecta padrões diários", use_container_width=True):
+        st.session_state.forecast_method = 'seasonal'
+
+with col_btn4:
+    if st.button("📈 Linear", help="Rápido e simples", use_container_width=True):
+        st.session_state.forecast_method = 'linear_regression'
+
+# Inicializar valor padrão se não existir
+if 'forecast_method' not in st.session_state:
+    st.session_state.forecast_method = 'ensemble'
+
+st.markdown("**🔧 Todos os Métodos:**")
+# Usar radio buttons para seleção completa
+forecast_method = st.radio(
+    "Selecione o método de previsão:",
+    options=list(method_options.keys()),
+    format_func=lambda x: method_options[x]['name'],
+    horizontal=True,
+    index=list(method_options.keys()).index(st.session_state.forecast_method)
+)
+
+# Atualizar session state
+st.session_state.forecast_method = forecast_method
+
+# Mostrar descrição do método selecionado
+st.info(f"**{method_options[forecast_method]['name']}**: {method_options[forecast_method]['desc']}")
+
+# Opção para comparar métodos
+col_compare1, col_compare2 = st.columns([1, 3])
+with col_compare1:
+    compare_methods = st.checkbox("🔬 Comparar todos os métodos", value=False)
+with col_compare2:
+    if compare_methods:
+        st.success("✅ Será gerada uma análise comparativa entre todos os métodos de previsão")
+
+st.markdown("---")
+
 # Função para extrair valores de AOD para um ponto específico
 def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
     """Extrai série temporal de um ponto específico do dataset."""
@@ -826,7 +890,7 @@ with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
 
 # Sidebar para configurações
-st.sidebar.header("⚙️ Configurações")
+st.sidebar.header("🏙️ Seleção do Município")
 
 # Seleção de cidade com os shapes disponíveis
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
@@ -836,25 +900,16 @@ if not available_cities:
 city = st.sidebar.selectbox("Selecione o município", available_cities)
 lat_center, lon_center = cities[city]
 
-# === NOVA SEÇÃO: SELEÇÃO DO MÉTODO DE PREVISÃO ===
-st.sidebar.header("🔮 Método de Previsão")
-forecast_method = st.sidebar.selectbox(
-    "Escolha o método:",
-    ['ensemble', 'linear_regression', 'moving_average', 'exponential_smoothing', 
-     'polynomial', 'seasonal', 'random_forest'],
-    format_func=lambda x: {
-        'ensemble': '🎯 Ensemble (Recomendado)',
-        'linear_regression': '📈 Regressão Linear',
-        'moving_average': '📊 Média Móvel',
-        'exponential_smoothing': '🌊 Suavização Exponencial',
-        'polynomial': '📐 Ajuste Polinomial',
-        'seasonal': '🔄 Decomposição Sazonal',
-        'random_forest': '🌳 Random Forest'
-    }[x]
-)
+# === SEÇÃO SIMPLIFICADA NA SIDEBAR ===
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Configurações Avançadas")
 
-# Adicionar opção para comparar métodos
-compare_methods = st.sidebar.checkbox("🔬 Comparar todos os métodos", value=False)
+# Mostrar método selecionado na sidebar (usando session state se disponível)
+current_method = st.session_state.get('forecast_method', forecast_method)
+if current_method in method_options:
+    st.sidebar.success(f"Método Selecionado: {method_options[current_method]['name']}")
+else:
+    st.sidebar.info("Selecione um método de previsão acima")
 
 # Configurações de data e hora
 st.sidebar.subheader("Período de Análise")
@@ -875,30 +930,136 @@ with st.sidebar.expander("Configurações da Visualização"):
 
 # Informações sobre os métodos
 st.sidebar.markdown("---")
-st.sidebar.subheader("📚 Sobre os Métodos")
-with st.sidebar.expander("Descrição dos Métodos"):
+st.sidebar.subheader("📚 Guia dos Métodos")
+with st.sidebar.expander("📖 Descrição Detalhada dos Métodos"):
     st.markdown("""
-    **🎯 Ensemble**: Combina todos os métodos com pesos otimizados
+    **🎯 Ensemble**: Combina todos os métodos com pesos otimizados. 
+    *Ideal para: Máxima confiabilidade e precisão*
     
-    **📈 Regressão Linear**: Ajuste linear simples aos dados históricos
+    **🌳 Random Forest**: Machine learning com features temporais avançadas.
+    *Ideal para: Dados com padrões complexos*
     
-    **📊 Média Móvel**: Média dos últimos valores observados
+    **🔄 Sazonal**: Detecta padrões diários e tendências sazonais.
+    *Ideal para: Dados com ciclos diários/sazonais*
     
-    **🌊 Suavização Exponencial**: Pondera mais os valores recentes
+    **📐 Polinomial**: Ajuste polinomial de grau 2 para tendências não-lineares.
+    *Ideal para: Tendências curvas ou aceleradas*
     
-    **📐 Polinomial**: Ajuste polinomial de grau 2
+    **🌊 Exponencial**: Suavização que pondera mais os valores recentes.
+    *Ideal para: Mudanças rápidas e dados com ruído*
     
-    **🔄 Sazonal**: Detecta padrões diários e tendências
+    **📊 Média Móvel**: Média dos últimos valores observados.
+    *Ideal para: Tendências estáveis*
     
-    **🌳 Random Forest**: Machine learning com features temporais
+    **📈 Linear**: Regressão linear clássica simples.
+    *Ideal para: Tendências lineares simples*
     """)
+
+# Dicas de uso
+with st.sidebar.expander("💡 Dicas de Uso"):
+    st.markdown("""
+    🎯 **Para iniciantes**: Use o método **Ensemble**
+    
+    📊 **Para dados estáveis**: Use **Média Móvel** ou **Linear**
+    
+    🔄 **Para dados com ciclos**: Use **Sazonal**
+    
+    🌳 **Para máxima precisão**: Use **Random Forest** ou **Ensemble**
+    
+    ⚡ **Para processamento rápido**: Use **Linear** ou **Média Móvel**
+    """)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("*💡 Dica: O método Ensemble geralmente oferece os melhores resultados*")
 
 # Agora, vamos adicionar o botão logo após o texto introdutório
 st.markdown("### 🚀 Iniciar Análise Avançada de AOD")
+
+# Exibir resumo das configurações selecionadas
+st.markdown("#### 📋 Resumo da Configuração")
+col_summary1, col_summary2, col_summary3 = st.columns(3)
+
+with col_summary1:
+    st.markdown(f"""
+    **🏙️ Município Selecionado:**
+    {city}
+    
+    **🔮 Método de Previsão:**
+    {method_options[forecast_method]['name']}
+    """)
+
+with col_summary2:
+    # Exibir resumo do método selecionado
+    method_details = {
+        'ensemble': {'color': '#1f77b4', 'complexity': 'Alta', 'accuracy': 'Máxima', 'speed': 'Moderada'},
+        'random_forest': {'color': '#ff7f0e', 'complexity': 'Alta', 'accuracy': 'Alta', 'speed': 'Moderada'},
+        'seasonal': {'color': '#2ca02c', 'complexity': 'Média', 'accuracy': 'Alta', 'speed': 'Rápida'},
+        'polynomial': {'color': '#d62728', 'complexity': 'Baixa', 'accuracy': 'Média', 'speed': 'Rápida'},
+        'exponential_smoothing': {'color': '#9467bd', 'complexity': 'Baixa', 'accuracy': 'Média', 'speed': 'Muito Rápida'},
+        'moving_average': {'color': '#8c564b', 'complexity': 'Baixa', 'accuracy': 'Baixa', 'speed': 'Muito Rápida'},
+        'linear_regression': {'color': '#e377c2', 'complexity': 'Baixa', 'accuracy': 'Baixa', 'speed': 'Muito Rápida'}
+    }
+
+    selected_details = method_details[forecast_method]
+    
+    st.markdown(f"""
+    **🧠 Complexidade:** {selected_details['complexity']}
+    
+    **🎯 Precisão:** {selected_details['accuracy']}
+    
+    **⚡ Velocidade:** {selected_details['speed']}
+    """)
+
+with col_summary3:
+    st.markdown(f"""
+    **📅 Período de Análise:**
+    {start_date} a {end_date}
+    
+    **🔬 Análise Comparativa:**
+    {"✅ Ativada" if compare_methods else "❌ Desativada"}
+    """)
+
+if compare_methods:
+    st.info("🔬 **Modo Comparativo Ativado**: Serão executados todos os 7 métodos de previsão para análise comparativa detalhada.")
+
 st.markdown("Clique no botão abaixo para gerar análise completa de AOD para todos os municípios de MS.")
 
 # Botão para iniciar análise
-if st.button("🎞️ Gerar Análise Completa", type="primary", use_container_width=True):
+st.markdown("---")
+col_btn_space1, col_btn_main, col_btn_space2 = st.columns([1, 2, 1])
+
+with col_btn_main:
+    # Criar botão customizado com cor baseada no método
+    method_color = method_details[forecast_method]['color']
+    
+    button_style = f"""
+    <style>
+    .method-button {{
+        background: linear-gradient(90deg, {method_color}22 0%, {method_color}44 100%);
+        border: 2px solid {method_color};
+        border-radius: 10px;
+        padding: 15px;
+        text-align: center;
+        margin: 10px 0;
+    }}
+    </style>
+    """
+    st.markdown(button_style, unsafe_allow_html=True)
+    
+    # Botão principal com ícone do método
+    method_icon = method_options[forecast_method]['name'].split()[0]
+    
+    analysis_button = st.button(
+        f"{method_icon} Gerar Análise Completa", 
+        type="primary", 
+        use_container_width=True,
+        help=f"Executar análise usando {method_options[forecast_method]['name']}"
+    )
+
+if analysis_button:
+    # Mostrar método sendo usado
+    st.success(f"🚀 Iniciando análise usando o método: **{method_options[forecast_method]['name']}**")
+    
     try:
         # Executar análise e obter resultados
         results = generate_aod_analysis_advanced()

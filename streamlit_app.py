@@ -864,6 +864,16 @@ if not available_cities:
 city = st.sidebar.selectbox("Selecione o município", available_cities)
 lat_center, lon_center = cities[city]
 
+# Na sidebar, adicionar:
+st.sidebar.subheader("Método de Previsão")
+prediction_method = st.sidebar.selectbox(
+    "Selecione o método de previsão",
+    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
+    index=0  # ensemble como padrão)
+
+# No processamento:
+df_forecast = predict_future_aod_advanced(df_timeseries, days=5, method=prediction_method)
+
 # Configurações de data e hora
 st.sidebar.subheader("Período de Análise")
 start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
@@ -880,11 +890,6 @@ with st.sidebar.expander("Configurações da Visualização"):
     animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
     colormap = st.selectbox("Paleta de Cores", 
                           ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis"])
-st.sidebar.subheader("Método de Previsão")
-prediction_method = st.sidebar.selectbox(
-    "Selecione o método de previsão",
-    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
-    index=0  # ensemble como padrão)
 
 # No processamento:
 df_forecast = predict_future_aod_advanced(df_timeseries, days=5, method=prediction_method)

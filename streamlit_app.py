@@ -212,7 +212,7 @@ def moving_average_forecast(df, window=3, days=5):
         'type': 'forecast',
         'method': 'moving_average'
     })
- def exponential_smoothing_forecast(df, alpha=0.3, days=5):
+def exponential_smoothing_forecast(df, alpha=0.3, days=5):
     """Previsão usando suavização exponencial."""
     if len(df) < 2:
         return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])

@@ -865,8 +865,8 @@ st.sidebar.header("⚙️ Configurações")
 st.sidebar.subheader("Método de Previsão")
 prediction_method = st.sidebar.selectbox(
     "Selecione o método de previsão",
-    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
-    index=0  # ensemble como padrão)
+    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],)
+    index=0  # ensemble como padrão
 
 # Seleção de cidade com os shapes disponíveis
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))

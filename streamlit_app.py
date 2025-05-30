@@ -16,6 +16,12 @@ from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 from sklearn.linear_model import LinearRegression
 import matplotlib.dates as mdates
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
+from scipy import signal
+from scipy.optimize import curve_fit
+import warnings
+warnings.filterwarnings('ignore')
 
 # Configuração inicial da página
 st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
@@ -185,6 +191,236 @@ def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
                     values.append(value)
                 except:
                     continue
+def moving_average_forecast(df, window=3, days=5):
+    """Previsão usando média móvel simples."""
+    if len(df) < window:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Calcular média móvel dos últimos valores
+    last_values = df['aod'].tail(window).mean()
+    
+    # Gerar pontos futuros
+    last_time = df['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    
+    # Usar média móvel como previsão (assumindo tendência estável)
+    future_aod = [last_values] * len(future_times)
+    
+    return pd.DataFrame({
+        'time': future_times,
+        'aod': future_aod,
+        'type': 'forecast',
+        'method': 'moving_average'
+    })
+ def exponential_smoothing_forecast(df, alpha=0.3, days=5):
+    """Previsão usando suavização exponencial."""
+    if len(df) < 2:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Aplicar suavização exponencial
+    values = df['aod'].values
+    smoothed = [values[0]]
+    
+    for i in range(1, len(values)):
+        smoothed.append(alpha * values[i] + (1 - alpha) * smoothed[-1])
+    
+    # Usar último valor suavizado como previsão
+    last_smoothed = smoothed[-1]
+    
+    # Gerar pontos futuros
+    last_time = df['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    future_aod = [last_smoothed] * len(future_times)
+    
+    return pd.DataFrame({
+        'time': future_times,
+        'aod': future_aod,
+        'type': 'forecast',
+        'method': 'exponential_smoothing'
+    })
+def polynomial_forecast(df, degree=2, days=5):
+    """Previsão usando ajuste polinomial."""
+    if len(df) < degree + 1:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Preparar dados
+    df_work = df.copy()
+    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds()
+    
+    # Ajustar polinômio
+    coeffs = np.polyfit(df_work['time_numeric'], df_work['aod'], degree)
+    poly_func = np.poly1d(coeffs)
+    
+    # Gerar pontos futuros
+    last_time = df['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    
+    # Calcular valores futuros
+    future_time_numeric = [(t - df['time'].min()).total_seconds() for t in future_times]
+    future_aod = poly_func(future_time_numeric)
+    
+    # Limitar valores negativos
+    future_aod = np.maximum(future_aod, 0)
+    
+    return pd.DataFrame({
+        'time': future_times,
+        'aod': future_aod,
+        'type': 'forecast',
+        'method': f'polynomial_deg{degree}'
+    })
+def seasonal_decomposition_forecast(df, days=5):
+    """Previsão baseada em decomposição sazonal simplificada."""
+    if len(df) < 8:  # Precisa de pelo menos 8 pontos para detectar padrões
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Calcular tendência simples (regressão linear)
+    df_work = df.copy()
+    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds()
+    
+    # Tendência linear
+    slope, intercept = np.polyfit(df_work['time_numeric'], df_work['aod'], 1)
+    trend = slope * df_work['time_numeric'] + intercept
+    
+    # Componente sazonal (ciclo diário simplificado)
+    df_work['hour'] = df_work['time'].dt.hour
+    hourly_means = df_work.groupby('hour')['aod'].mean()
+    
+    # Gerar pontos futuros
+    last_time = df['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    
+    future_aod = []
+    for future_time in future_times:
+        # Calcular tendência futura
+        future_time_numeric = (future_time - df['time'].min()).total_seconds()
+        future_trend = slope * future_time_numeric + intercept
+        
+        # Adicionar componente sazonal
+        hour = future_time.hour
+        if hour in hourly_means.index:
+            seasonal_component = hourly_means[hour] - df['aod'].mean()
+        else:
+            seasonal_component = 0
+        
+        predicted_value = future_trend + seasonal_component
+        future_aod.append(max(0, predicted_value))
+    
+    return pd.DataFrame({
+        'time': future_times,
+        'aod': future_aod,
+        'type': 'forecast',
+        'method': 'seasonal_decomposition'
+    })
+def random_forest_forecast(df, days=5):
+    """Previsão usando Random Forest com features temporais."""
+    if len(df) < 5:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Criar features temporais
+    df_work = df.copy()
+    df_work['hour'] = df_work['time'].dt.hour
+    df_work['day_of_year'] = df_work['time'].dt.dayofyear
+    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds()
+    
+    # Criar features de lag (valores anteriores)
+    for lag in [1, 2, 3]:
+        df_work[f'aod_lag_{lag}'] = df_work['aod'].shift(lag)
+    
+    # Remover linhas com NaN
+    df_clean = df_work.dropna()
+    
+    if len(df_clean) < 3:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Preparar dados para treinamento
+    feature_cols = ['hour', 'day_of_year', 'time_numeric'] + [f'aod_lag_{i}' for i in [1, 2, 3]]
+    X = df_clean[feature_cols].values
+    y = df_clean['aod'].values
+    
+    # Treinar modelo
+    rf = RandomForestRegressor(n_estimators=50, random_state=42)
+    rf.fit(X, y)
+    
+    # Gerar previsões futuras
+    last_time = df['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    
+    future_aod = []
+    last_values = df['aod'].tail(3).values  # Últimos 3 valores para lags
+    
+    for i, future_time in enumerate(future_times):
+        # Criar features para o ponto futuro
+        hour = future_time.hour
+        day_of_year = future_time.timetuple().tm_yday
+        time_numeric = (future_time - df['time'].min()).total_seconds()
+        
+        # Usar valores anteriores como lags
+        if i == 0:
+            lags = last_values
+        elif i == 1:
+            lags = np.append(last_values[1:], [future_aod[0]])
+        elif i == 2:
+            lags = np.append(last_values[2:], future_aod[:2])
+        else:
+            lags = future_aod[i-3:i]
+        
+        # Garantir que temos 3 lags
+        if len(lags) < 3:
+            lags = np.pad(lags, (3-len(lags), 0), mode='edge')
+        
+        features = np.array([[hour, day_of_year, time_numeric] + lags[-3:].tolist()])
+        prediction = rf.predict(features)[0]
+        future_aod.append(max(0, prediction))
+    
+    return pd.DataFrame({
+        'time': future_times,
+        'aod': future_aod,
+        'type': 'forecast',
+        'method': 'random_forest'
+    })
+def ensemble_forecast(df, days=5):
+    """Previsão ensemble combinando múltiplos métodos."""
+    methods = [
+        moving_average_forecast,
+        exponential_smoothing_forecast,
+        lambda x, d: polynomial_forecast(x, degree=2, days=d),
+        seasonal_decomposition_forecast,
+        random_forest_forecast
+    ]
+    
+    forecasts = []
+    weights = [0.15, 0.2, 0.2, 0.25, 0.2]  # Pesos para cada método
+    
+    # Gerar previsões de todos os métodos
+    for method in methods:
+        try:
+            forecast = method(df, days)
+            if not forecast.empty:
+                forecasts.append(forecast['aod'].values)
+        except:
+            continue
+    
+    if not forecasts:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    
+    # Calcular média ponderada
+    forecasts_array = np.array(forecasts)
+    if len(forecasts) != len(weights):
+        # Usar pesos iguais se número de métodos for diferente
+        weights = [1/len(forecasts)] * len(forecasts)
+    
+    ensemble_aod = np.average(forecasts_array, axis=0, weights=weights[:len(forecasts)])
+    
+    # Gerar pontos futuros
+    last_time = df['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    
+    return pd.DataFrame({
+        'time': future_times,
+        'aod': ensemble_aod,
+        'type': 'forecast',
+        'method': 'ensemble'
+    })
     # Caso tenha apenas uma dimensão de tempo
     elif any(dim in ds[var_name].dims for dim in ['time', 'forecast_reference_time']):
         time_dim = next(dim for dim in ds[var_name].dims if dim in ['time', 'forecast_reference_time'])
@@ -209,45 +445,80 @@ def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
         return pd.DataFrame(columns=['time', 'aod'])
 
 # Função para prever valores futuros de AOD
-def predict_future_aod(df, days=5):  # Aumentado para 5 dias
-    """Gera uma previsão simples de AOD baseada nos dados históricos."""
-    if len(df) < 3:  # Precisa de pelo menos 3 pontos para uma previsão mínima
-        return pd.DataFrame(columns=['time', 'aod', 'type'])
+def predict_future_aod_advanced(df, method='ensemble', days=5):
+    """Gera previsão usando o método especificado."""
+    if len(df) < 2:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
     
-    # Preparar dados para regressão
+    # Adicionar dados históricos
     df_hist = df.copy()
-    df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
-    
-    # Modelo de regressão linear simples
-    X = df_hist['time_numeric'].values.reshape(-1, 1)
-    y = df_hist['aod'].values
-    model = LinearRegression()
-    model.fit(X, y)
-    
-    # Gerar pontos futuros
-    last_time = df_hist['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]  # 4 pontos por dia (6h)
-    future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
-    
-    # Prever valores
-    future_aod = model.predict(np.array(future_time_numeric).reshape(-1, 1))
-    
-    # Limitar valores previstos (AOD não pode ser negativo)
-    future_aod = np.maximum(future_aod, 0)
-    
-    # Criar DataFrame com previsão
-    df_pred = pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'type': 'forecast'
-    })
-    
-    # Adicionar indicador aos dados históricos
     df_hist['type'] = 'historical'
+    df_hist['method'] = 'observed'
+    
+    # Escolher método de previsão
+    if method == 'linear_regression':
+        # Regressão linear (método original)
+        df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
+        X = df_hist['time_numeric'].values.reshape(-1, 1)
+        y = df_hist['aod'].values
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        last_time = df_hist['time'].max()
+        future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+        future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
+        future_aod = model.predict(np.array(future_time_numeric).reshape(-1, 1))
+        future_aod = np.maximum(future_aod, 0)
+        
+        df_pred = pd.DataFrame({
+            'time': future_times,
+            'aod': future_aod,
+            'type': 'forecast',
+            'method': 'linear_regression'
+        })
+    
+    elif method == 'moving_average':
+        df_pred = moving_average_forecast(df, days=days)
+    elif method == 'exponential_smoothing':
+        df_pred = exponential_smoothing_forecast(df, days=days)
+    elif method == 'polynomial':
+        df_pred = polynomial_forecast(df, degree=2, days=days)
+    elif method == 'seasonal':
+        df_pred = seasonal_decomposition_forecast(df, days=days)
+    elif method == 'random_forest':
+        df_pred = random_forest_forecast(df, days=days)
+    elif method == 'ensemble':
+        df_pred = ensemble_forecast(df, days=days)
+    else:
+        # Default para ensemble
+        df_pred = ensemble_forecast(df, days=days)
     
     # Combinar histórico e previsão
-    result = pd.concat([df_hist[['time', 'aod', 'type']], df_pred], ignore_index=True)
+    result = pd.concat([df_hist[['time', 'aod', 'type', 'method']], df_pred], ignore_index=True)
     return result
+def compare_forecast_methods(df, days=5):
+    """Compara diferentes métodos de previsão."""
+    methods = {
+        'Regressão Linear': 'linear_regression',
+        'Média Móvel': 'moving_average',
+        'Suavização Exponencial': 'exponential_smoothing',
+        'Polinomial': 'polynomial',
+        'Decomposição Sazonal': 'seasonal',
+        'Random Forest': 'random_forest',
+        'Ensemble': 'ensemble'
+    }
+    
+    forecasts = {}
+    
+    for name, method in methods.items():
+        try:
+            forecast = predict_future_aod_advanced(df, method=method, days=days)
+            forecasts[name] = forecast
+        except Exception as e:
+            st.warning(f"Erro no método {name}: {str(e)}")
+            continue
+    
+    return forecasts
 
 # NOVA FUNÇÃO: Analisar AOD para todas as cidades e gerar tabela de alertas
 def analyze_all_cities(ds, aod_var, cities_dict):
@@ -558,6 +829,26 @@ if not available_cities:
 
 city = st.sidebar.selectbox("Selecione o município", available_cities)
 lat_center, lon_center = cities[city]
+
+# Adicionar seleção do método de previsão na sidebar
+st.sidebar.header("🔮 Método de Previsão")
+forecast_method = st.sidebar.selectbox(
+    "Escolha o método:",
+    ['ensemble', 'linear_regression', 'moving_average', 'exponential_smoothing', 
+     'polynomial', 'seasonal', 'random_forest'],
+    format_func=lambda x: {
+        'ensemble': '🎯 Ensemble (Recomendado)',
+        'linear_regression': '📈 Regressão Linear',
+        'moving_average': '📊 Média Móvel',
+        'exponential_smoothing': '🌊 Suavização Exponencial',
+        'polynomial': '📐 Ajuste Polinomial',
+        'seasonal': '🔄 Decomposição Sazonal',
+        'random_forest': '🌳 Random Forest'
+    }[x]
+)
+
+# Adicionar opção para comparar métodos
+compare_methods = st.sidebar.checkbox("🔬 Comparar todos os métodos", value=False)
 
 # Configurações de data e hora
 st.sidebar.subheader("Período de Análise")

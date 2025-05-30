@@ -17,14 +17,6 @@ from matplotlib.path import Path
 from sklearn.linear_model import LinearRegression
 import matplotlib.dates as mdates
 
-# === NOVOS IMPORTS PARA MÉTODOS DE PREVISÃO ===
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
-from scipy import signal
-from scipy.optimize import curve_fit
-import warnings
-warnings.filterwarnings('ignore')
-
 # Configuração inicial da página
 st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
 
@@ -162,70 +154,6 @@ para municípios de Mato Grosso do Sul. Os dados são obtidos em tempo real do C
 Monitoring Service).
 """)
 
-# === NOVA SEÇÃO DE SELEÇÃO DE MÉTODO DE PREVISÃO ===
-st.markdown("---")
-st.subheader("🔮 Escolha o Método de Previsão")
-
-method_options = {
-    'ensemble': {'name': '🎯 Ensemble', 'desc': 'Combina todos os métodos (Recomendado)'},
-    'random_forest': {'name': '🌳 Random Forest', 'desc': 'Machine learning avançado'},
-    'seasonal': {'name': '🔄 Sazonal', 'desc': 'Detecta padrões diários'},
-    'polynomial': {'name': '📐 Polinomial', 'desc': 'Tendências não-lineares'},
-    'exponential_smoothing': {'name': '🌊 Exponencial', 'desc': 'Pondera valores recentes'},
-    'moving_average': {'name': '📊 Média Móvel', 'desc': 'Média dos últimos valores'},
-    'linear_regression': {'name': '📈 Linear', 'desc': 'Regressão linear simples'}
-}
-
-# Adicionar botões de seleção rápida para métodos populares
-st.markdown("**🚀 Seleção Rápida:**")
-col_btn1, col_btn2, col_btn3, col_btn4, col_space = st.columns([1.5, 1.5, 1.5, 1.5, 2])
-
-with col_btn1:
-    if st.button("🎯 Ensemble", help="Recomendado para máxima precisão", use_container_width=True):
-        st.session_state.forecast_method = 'ensemble'
-
-with col_btn2:
-    if st.button("🌳 Random Forest", help="Machine Learning avançado", use_container_width=True):
-        st.session_state.forecast_method = 'random_forest'
-
-with col_btn3:
-    if st.button("🔄 Sazonal", help="Detecta padrões diários", use_container_width=True):
-        st.session_state.forecast_method = 'seasonal'
-
-with col_btn4:
-    if st.button("📈 Linear", help="Rápido e simples", use_container_width=True):
-        st.session_state.forecast_method = 'linear_regression'
-
-# Inicializar valor padrão se não existir
-if 'forecast_method' not in st.session_state:
-    st.session_state.forecast_method = 'ensemble'
-
-st.markdown("**🔧 Todos os Métodos:**")
-# Usar radio buttons para seleção completa
-forecast_method = st.radio(
-    "Selecione o método de previsão:",
-    options=list(method_options.keys()),
-    format_func=lambda x: method_options[x]['name'],
-    horizontal=True,
-    index=list(method_options.keys()).index(st.session_state.forecast_method)
-)
-
-# Atualizar session state
-st.session_state.forecast_method = forecast_method
-
-# Mostrar descrição do método selecionado
-st.info(f"**{method_options[forecast_method]['name']}**: {method_options[forecast_method]['desc']}")
-
-# Opção para comparar métodos
-col_compare1, col_compare2 = st.columns([1, 3])
-with col_compare1:
-    compare_methods = st.checkbox("🔬 Comparar todos os métodos", value=False)
-with col_compare2:
-    if compare_methods:
-        st.success("✅ Será gerada uma análise comparativa entre todos os métodos de previsão")
-
-st.markdown("---")
-
 # Função para extrair valores de AOD para um ponto específico
 def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
     """Extrai série temporal de um ponto específico do dataset."""
@@ -280,324 +208,49 @@ def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
     else:
         return pd.DataFrame(columns=['time', 'aod'])
 
-# === NOVAS FUNÇÕES DE PREVISÃO ===
-
-def moving_average_forecast(df, window=3, days=5):
-    """Previsão usando média móvel simples."""
-    if len(df) < window:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+# Função para prever valores futuros de AOD
+def predict_future_aod(df, days=5):  # Aumentado para 5 dias
+    """Gera uma previsão simples de AOD baseada nos dados históricos."""
+    if len(df) < 3:  # Precisa de pelo menos 3 pontos para uma previsão mínima
+        return pd.DataFrame(columns=['time', 'aod', 'type'])
     
-    # Calcular média móvel dos últimos valores
-    last_values = df['aod'].tail(window).mean()
+    # Preparar dados para regressão
+    df_hist = df.copy()
+    df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
     
-    # Gerar pontos futuros
-    last_time = df['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    
-    # Usar média móvel como previsão (assumindo tendência estável)
-    future_aod = [last_values] * len(future_times)
-    
-    return pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'type': 'forecast',
-        'method': 'moving_average'
-    })
-
-def exponential_smoothing_forecast(df, alpha=0.3, days=5):
-    """Previsão usando suavização exponencial."""
-    if len(df) < 2:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
-    
-    # Aplicar suavização exponencial
-    values = df['aod'].values
-    smoothed = [values[0]]
-    
-    for i in range(1, len(values)):
-        smoothed.append(alpha * values[i] + (1 - alpha) * smoothed[-1])
-    
-    # Usar último valor suavizado como previsão
-    last_smoothed = smoothed[-1]
+    # Modelo de regressão linear simples
+    X = df_hist['time_numeric'].values.reshape(-1, 1)
+    y = df_hist['aod'].values
+    model = LinearRegression()
+    model.fit(X, y)
     
     # Gerar pontos futuros
-    last_time = df['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    future_aod = [last_smoothed] * len(future_times)
+    last_time = df_hist['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]  # 4 pontos por dia (6h)
+    future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
     
-    return pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'type': 'forecast',
-        'method': 'exponential_smoothing'
-    })
-
-def polynomial_forecast(df, degree=2, days=5):
-    """Previsão usando ajuste polinomial."""
-    if len(df) < degree + 1:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
+    # Prever valores
+    future_aod = model.predict(np.array(future_time_numeric).reshape(-1, 1))
     
-    # Preparar dados
-    df_work = df.copy()
-    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds()
-    
-    # Ajustar polinômio
-    coeffs = np.polyfit(df_work['time_numeric'], df_work['aod'], degree)
-    poly_func = np.poly1d(coeffs)
-    
-    # Gerar pontos futuros
-    last_time = df['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    
-    # Calcular valores futuros
-    future_time_numeric = [(t - df['time'].min()).total_seconds() for t in future_times]
-    future_aod = poly_func(future_time_numeric)
-    
-    # Limitar valores negativos
+    # Limitar valores previstos (AOD não pode ser negativo)
     future_aod = np.maximum(future_aod, 0)
     
-    return pd.DataFrame({
+    # Criar DataFrame com previsão
+    df_pred = pd.DataFrame({
         'time': future_times,
         'aod': future_aod,
-        'type': 'forecast',
-        'method': f'polynomial_deg{degree}'
+        'type': 'forecast'
     })
-
-def seasonal_decomposition_forecast(df, days=5):
-    """Previsão baseada em decomposição sazonal simplificada."""
-    if len(df) < 8:  # Precisa de pelo menos 8 pontos para detectar padrões
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
     
-    # Calcular tendência simples (regressão linear)
-    df_work = df.copy()
-    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds()
-    
-    # Tendência linear
-    slope, intercept = np.polyfit(df_work['time_numeric'], df_work['aod'], 1)
-    trend = slope * df_work['time_numeric'] + intercept
-    
-    # Componente sazonal (ciclo diário simplificado)
-    df_work['hour'] = df_work['time'].dt.hour
-    hourly_means = df_work.groupby('hour')['aod'].mean()
-    
-    # Gerar pontos futuros
-    last_time = df['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    
-    future_aod = []
-    for future_time in future_times:
-        # Calcular tendência futura
-        future_time_numeric = (future_time - df['time'].min()).total_seconds()
-        future_trend = slope * future_time_numeric + intercept
-        
-        # Adicionar componente sazonal
-        hour = future_time.hour
-        if hour in hourly_means.index:
-            seasonal_component = hourly_means[hour] - df['aod'].mean()
-        else:
-            seasonal_component = 0
-        
-        predicted_value = future_trend + seasonal_component
-        future_aod.append(max(0, predicted_value))
-    
-    return pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'type': 'forecast',
-        'method': 'seasonal_decomposition'
-    })
-
-def random_forest_forecast(df, days=5):
-    """Previsão usando Random Forest com features temporais."""
-    if len(df) < 5:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
-    
-    # Criar features temporais
-    df_work = df.copy()
-    df_work['hour'] = df_work['time'].dt.hour
-    df_work['day_of_year'] = df_work['time'].dt.dayofyear
-    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds()
-    
-    # Criar features de lag (valores anteriores)
-    for lag in [1, 2, 3]:
-        df_work[f'aod_lag_{lag}'] = df_work['aod'].shift(lag)
-    
-    # Remover linhas com NaN
-    df_clean = df_work.dropna()
-    
-    if len(df_clean) < 3:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
-    
-    # Preparar dados para treinamento
-    feature_cols = ['hour', 'day_of_year', 'time_numeric'] + [f'aod_lag_{i}' for i in [1, 2, 3]]
-    X = df_clean[feature_cols].values
-    y = df_clean['aod'].values
-    
-    # Treinar modelo
-    rf = RandomForestRegressor(n_estimators=50, random_state=42)
-    rf.fit(X, y)
-    
-    # Gerar previsões futuras
-    last_time = df['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    
-    future_aod = []
-    last_values = df['aod'].tail(3).values  # Últimos 3 valores para lags
-    
-    for i, future_time in enumerate(future_times):
-        # Criar features para o ponto futuro
-        hour = future_time.hour
-        day_of_year = future_time.timetuple().tm_yday
-        time_numeric = (future_time - df['time'].min()).total_seconds()
-        
-        # Usar valores anteriores como lags
-        if i == 0:
-            lags = last_values
-        elif i == 1:
-            lags = np.append(last_values[1:], [future_aod[0]])
-        elif i == 2:
-            lags = np.append(last_values[2:], future_aod[:2])
-        else:
-            lags = future_aod[i-3:i]
-        
-        # Garantir que temos 3 lags
-        if len(lags) < 3:
-            lags = np.pad(lags, (3-len(lags), 0), mode='edge')
-        
-        features = np.array([[hour, day_of_year, time_numeric] + lags[-3:].tolist()])
-        prediction = rf.predict(features)[0]
-        future_aod.append(max(0, prediction))
-    
-    return pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'type': 'forecast',
-        'method': 'random_forest'
-    })
-
-def ensemble_forecast(df, days=5):
-    """Previsão ensemble combinando múltiplos métodos."""
-    methods = [
-        moving_average_forecast,
-        exponential_smoothing_forecast,
-        lambda x, d: polynomial_forecast(x, degree=2, days=d),
-        seasonal_decomposition_forecast,
-        random_forest_forecast
-    ]
-    
-    forecasts = []
-    weights = [0.15, 0.2, 0.2, 0.25, 0.2]  # Pesos para cada método
-    
-    # Gerar previsões de todos os métodos
-    for method in methods:
-        try:
-            forecast = method(df, days)
-            if not forecast.empty:
-                forecasts.append(forecast['aod'].values)
-        except:
-            continue
-    
-    if not forecasts:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
-    
-    # Calcular média ponderada
-    forecasts_array = np.array(forecasts)
-    if len(forecasts) != len(weights):
-        # Usar pesos iguais se número de métodos for diferente
-        weights = [1/len(forecasts)] * len(forecasts)
-    
-    ensemble_aod = np.average(forecasts_array, axis=0, weights=weights[:len(forecasts)])
-    
-    # Gerar pontos futuros
-    last_time = df['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    
-    return pd.DataFrame({
-        'time': future_times,
-        'aod': ensemble_aod,
-        'type': 'forecast',
-        'method': 'ensemble'
-    })
-
-# === FUNÇÃO DE PREVISÃO APRIMORADA (SUBSTITUI A ORIGINAL) ===
-def predict_future_aod(df, method='ensemble', days=5):
-    """Gera previsão usando o método especificado."""
-    if len(df) < 2:
-        return pd.DataFrame(columns=['time', 'aod', 'type', 'method'])
-    
-    # Adicionar dados históricos
-    df_hist = df.copy()
+    # Adicionar indicador aos dados históricos
     df_hist['type'] = 'historical'
-    df_hist['method'] = 'observed'
-    
-    # Escolher método de previsão
-    if method == 'linear_regression':
-        # Regressão linear (método original)
-        df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
-        X = df_hist['time_numeric'].values.reshape(-1, 1)
-        y = df_hist['aod'].values
-        model = LinearRegression()
-        model.fit(X, y)
-        
-        last_time = df_hist['time'].max()
-        future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-        future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
-        future_aod = model.predict(np.array(future_time_numeric).reshape(-1, 1))
-        future_aod = np.maximum(future_aod, 0)
-        
-        df_pred = pd.DataFrame({
-            'time': future_times,
-            'aod': future_aod,
-            'type': 'forecast',
-            'method': 'linear_regression'
-        })
-    
-    elif method == 'moving_average':
-        df_pred = moving_average_forecast(df, days=days)
-    elif method == 'exponential_smoothing':
-        df_pred = exponential_smoothing_forecast(df, days=days)
-    elif method == 'polynomial':
-        df_pred = polynomial_forecast(df, degree=2, days=days)
-    elif method == 'seasonal':
-        df_pred = seasonal_decomposition_forecast(df, days=days)
-    elif method == 'random_forest':
-        df_pred = random_forest_forecast(df, days=days)
-    elif method == 'ensemble':
-        df_pred = ensemble_forecast(df, days=days)
-    else:
-        # Default para ensemble
-        df_pred = ensemble_forecast(df, days=days)
     
     # Combinar histórico e previsão
-    result = pd.concat([df_hist[['time', 'aod', 'type', 'method']], df_pred], ignore_index=True)
+    result = pd.concat([df_hist[['time', 'aod', 'type']], df_pred], ignore_index=True)
     return result
 
-# === FUNÇÃO DE COMPARAÇÃO DE MÉTODOS ===
-def compare_forecast_methods(df, days=5):
-    """Compara diferentes métodos de previsão."""
-    methods = {
-        'Regressão Linear': 'linear_regression',
-        'Média Móvel': 'moving_average',
-        'Suavização Exponencial': 'exponential_smoothing',
-        'Polinomial': 'polynomial',
-        'Decomposição Sazonal': 'seasonal',
-        'Random Forest': 'random_forest',
-        'Ensemble': 'ensemble'
-    }
-    
-    forecasts = {}
-    
-    for name, method in methods.items():
-        try:
-            forecast = predict_future_aod(df, method=method, days=days)
-            forecasts[name] = forecast
-        except Exception as e:
-            st.warning(f"Erro no método {name}: {str(e)}")
-            continue
-    
-    return forecasts
-
-# NOVA FUNÇÃO: Analisar AOD para todas as cidades com método selecionado
-def analyze_all_cities(ds, aod_var, cities_dict, method='ensemble'):
+# NOVA FUNÇÃO: Analisar AOD para todas as cidades e gerar tabela de alertas
+def analyze_all_cities(ds, aod_var, cities_dict):
     """Analisa os valores de AOD para todas as cidades e retorna as 20 mais críticas."""
     cities_results = []
     
@@ -614,8 +267,8 @@ def analyze_all_cities(ds, aod_var, cities_dict, method='ensemble'):
             df_timeseries = extract_point_timeseries(ds, lat, lon, var_name=aod_var)
             
             if not df_timeseries.empty:
-                # Gerar previsão usando o método selecionado
-                df_forecast = predict_future_aod(df_timeseries, method=method, days=5)
+                # Gerar previsão
+                df_forecast = predict_future_aod(df_timeseries, days=5)
                 
                 # Filtrar apenas dados de previsão
                 forecast_only = df_forecast[df_forecast['type'] == 'forecast']
@@ -639,8 +292,7 @@ def analyze_all_cities(ds, aod_var, cities_dict, method='ensemble'):
                         'cidade': city_name,
                         'aod_max': max_aod,
                         'data_max': max_day,
-                        'nivel': pollution_level,
-                        'metodo': method
+                        'nivel': pollution_level
                     })
     
     # Criar DataFrame com os resultados
@@ -656,7 +308,7 @@ def analyze_all_cities(ds, aod_var, cities_dict, method='ensemble'):
         
         return df_results
     else:
-        return pd.DataFrame(columns=['cidade', 'aod_max', 'data_max', 'nivel', 'metodo'])
+        return pd.DataFrame(columns=['cidade', 'aod_max', 'data_max', 'nivel'])
 
 # Função principal para gerar análise de AOD
 def generate_aod_analysis():
@@ -729,15 +381,9 @@ def generate_aod_analysis():
             st.error("Não foi possível extrair série temporal para este local.")
             return None
         
-        # Gerar previsão para os próximos dias usando método selecionado
-        with st.spinner(f"Gerando previsão usando {forecast_method}..."):
-            df_forecast = predict_future_aod(df_timeseries, method=forecast_method, days=5)
-        
-        # Gerar comparação de métodos se solicitado
-        method_comparison = None
-        if compare_methods:
-            with st.spinner("Comparando todos os métodos de previsão..."):
-                method_comparison = compare_forecast_methods(df_timeseries, days=5)
+        # Gerar previsão para os próximos dias
+        with st.spinner("Gerando previsão de AOD..."):
+            df_forecast = predict_future_aod(df_timeseries, days=5)  # Aumentado para 5 dias
         
         # Encontrar o município no geodataframe
         municipality_shape = None
@@ -878,10 +524,10 @@ def generate_aod_analysis():
         
         plt.close(fig)
 
-        # NOVO: Analisar dados para todas as cidades do MS usando método selecionado
+        # NOVO: Analisar dados para todas as cidades do MS
         top_pollution_cities = None
-        with st.spinner(f"🔍 Analisando todas as cidades do MS com método {forecast_method}..."):
-            top_pollution_cities = analyze_all_cities(ds, aod_var, cities, method=forecast_method)
+        with st.spinner("🔍 Analisando todas as cidades do MS para alerta de poluição..."):
+            top_pollution_cities = analyze_all_cities(ds, aod_var, cities)
         
         return {
             'animation': gif_filename,
@@ -889,9 +535,7 @@ def generate_aod_analysis():
             'forecast': df_forecast,
             'dataset': ds,
             'variable': aod_var,
-            'top_pollution': top_pollution_cities,
-            'method_comparison': method_comparison,
-            'selected_method': forecast_method
+            'top_pollution': top_pollution_cities  # Novo item no dicionário de resultados
         }
     
     except Exception as e:
@@ -905,7 +549,7 @@ with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
 
 # Sidebar para configurações
-st.sidebar.header("🏙️ Seleção do Município")
+st.sidebar.header("⚙️ Configurações")
 
 # Seleção de cidade com os shapes disponíveis
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
@@ -914,17 +558,6 @@ if not available_cities:
 
 city = st.sidebar.selectbox("Selecione o município", available_cities)
 lat_center, lon_center = cities[city]
-
-# === SEÇÃO SIMPLIFICADA NA SIDEBAR ===
-st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Configurações Avançadas")
-
-# Mostrar método selecionado na sidebar (usando session state se disponível)
-current_method = st.session_state.get('forecast_method', forecast_method)
-if current_method in method_options:
-    st.sidebar.success(f"Método Selecionado: {method_options[current_method]['name']}")
-else:
-    st.sidebar.info("Selecione um método de previsão acima")
 
 # Configurações de data e hora
 st.sidebar.subheader("Período de Análise")
@@ -943,159 +576,21 @@ with st.sidebar.expander("Configurações da Visualização"):
     colormap = st.selectbox("Paleta de Cores", 
                           ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis"])
 
-# Informações sobre os métodos
-st.sidebar.markdown("---")
-st.sidebar.subheader("📚 Guia dos Métodos")
-with st.sidebar.expander("📖 Descrição Detalhada dos Métodos"):
-    st.markdown("""
-    **🎯 Ensemble**: Combina todos os métodos com pesos otimizados. 
-    *Ideal para: Máxima confiabilidade e precisão*
-    
-    **🌳 Random Forest**: Machine learning com features temporais avançadas.
-    *Ideal para: Dados com padrões complexos*
-    
-    **🔄 Sazonal**: Detecta padrões diários e tendências sazonais.
-    *Ideal para: Dados com ciclos diários/sazonais*
-    
-    **📐 Polinomial**: Ajuste polinomial de grau 2 para tendências não-lineares.
-    *Ideal para: Tendências curvas ou aceleradas*
-    
-    **🌊 Exponencial**: Suavização que pondera mais os valores recentes.
-    *Ideal para: Mudanças rápidas e dados com ruído*
-    
-    **📊 Média Móvel**: Média dos últimos valores observados.
-    *Ideal para: Tendências estáveis*
-    
-    **📈 Linear**: Regressão linear clássica simples.
-    *Ideal para: Tendências lineares simples*
-    """)
-
-# Dicas de uso
-with st.sidebar.expander("💡 Dicas de Uso"):
-    st.markdown("""
-    🎯 **Para iniciantes**: Use o método **Ensemble**
-    
-    📊 **Para dados estáveis**: Use **Média Móvel** ou **Linear**
-    
-    🔄 **Para dados com ciclos**: Use **Sazonal**
-    
-    🌳 **Para máxima precisão**: Use **Random Forest** ou **Ensemble**
-    
-    ⚡ **Para processamento rápido**: Use **Linear** ou **Média Móvel**
-    """)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("*💡 Dica: O método Ensemble geralmente oferece os melhores resultados*")
-
 # Agora, vamos adicionar o botão logo após o texto introdutório
-st.markdown("### 🚀 Iniciar Análise Avançada de AOD")
-
-# Exibir resumo das configurações selecionadas
-st.markdown("#### 📋 Resumo da Configuração")
-col_summary1, col_summary2, col_summary3 = st.columns(3)
-
-with col_summary1:
-    st.markdown(f"""
-    **🏙️ Município Selecionado:**
-    {city}
-    
-    **🔮 Método de Previsão:**
-    {method_options[forecast_method]['name']}
-    """)
-
-with col_summary2:
-    # Exibir resumo do método selecionado
-    method_details = {
-        'ensemble': {'color': '#1f77b4', 'complexity': 'Alta', 'accuracy': 'Máxima', 'speed': 'Moderada'},
-        'random_forest': {'color': '#ff7f0e', 'complexity': 'Alta', 'accuracy': 'Alta', 'speed': 'Moderada'},
-        'seasonal': {'color': '#2ca02c', 'complexity': 'Média', 'accuracy': 'Alta', 'speed': 'Rápida'},
-        'polynomial': {'color': '#d62728', 'complexity': 'Baixa', 'accuracy': 'Média', 'speed': 'Rápida'},
-        'exponential_smoothing': {'color': '#9467bd', 'complexity': 'Baixa', 'accuracy': 'Média', 'speed': 'Muito Rápida'},
-        'moving_average': {'color': '#8c564b', 'complexity': 'Baixa', 'accuracy': 'Baixa', 'speed': 'Muito Rápida'},
-        'linear_regression': {'color': '#e377c2', 'complexity': 'Baixa', 'accuracy': 'Baixa', 'speed': 'Muito Rápida'}
-    }
-
-    selected_details = method_details[forecast_method]
-    
-    st.markdown(f"""
-    **🧠 Complexidade:** {selected_details['complexity']}
-    
-    **🎯 Precisão:** {selected_details['accuracy']}
-    
-    **⚡ Velocidade:** {selected_details['speed']}
-    """)
-
-with col_summary3:
-    st.markdown(f"""
-    **📅 Período de Análise:**
-    {start_date} a {end_date}
-    
-    **🔬 Análise Comparativa:**
-    {"✅ Ativada" if compare_methods else "❌ Desativada"}
-    """)
-
-if compare_methods:
-    st.info("🔬 **Modo Comparativo Ativado**: Serão executados todos os 7 métodos de previsão para análise comparativa detalhada.")
-
+st.markdown("### 🚀 Iniciar Análise de AOD")
 st.markdown("Clique no botão abaixo para gerar análise completa de AOD para todos os municípios de MS.")
 
 # Botão para iniciar análise
-st.markdown("---")
-col_btn_space1, col_btn_main, col_btn_space2 = st.columns([1, 2, 1])
-
-with col_btn_main:
-    # Criar botão customizado com cor baseada no método
-    method_color = method_details[forecast_method]['color']
-    
-    button_style = f"""
-    <style>
-    .method-button {{
-        background: linear-gradient(90deg, {method_color}22 0%, {method_color}44 100%);
-        border: 2px solid {method_color};
-        border-radius: 10px;
-        padding: 15px;
-        text-align: center;
-        margin: 10px 0;
-    }}
-    </style>
-    """
-    st.markdown(button_style, unsafe_allow_html=True)
-    
-    # Botão principal com ícone do método
-    method_icon = method_options[forecast_method]['name'].split()[0]
-    
-    analysis_button = st.button(
-        f"{method_icon} Gerar Análise Completa", 
-        type="primary", 
-        use_container_width=True,
-        help=f"Executar análise usando {method_options[forecast_method]['name']}"
-    )
-
-if analysis_button:
-    # Mostrar método sendo usado
-    st.success(f"🚀 Iniciando análise usando o método: **{method_options[forecast_method]['name']}**")
-    
+if st.button("🎞️ Gerar Análise Completa", type="primary", use_container_width=True):
     try:
         # Executar análise e obter resultados
         results = generate_aod_analysis()
         
         if results:
             # Layout com abas para diferentes visualizações
-            if compare_methods:
-                tab1, tab2, tab3, tab4 = st.tabs([
-                    "📊 Análise do Município", 
-                    "🔬 Comparação de Métodos",
-                    "⚠️ Alerta de Poluição para MS", 
-                    "🗺️ Mapa e Animação"
-                ])
-            else:
-                tab1, tab2, tab3 = st.tabs([
-                    "📊 Análise do Município", 
-                    "⚠️ Alerta de Poluição para MS", 
-                    "🗺️ Mapa e Animação"
-                ])
+            tab1, tab2, tab3 = st.tabs(["📊 Análise do Município", "⚠️ Alerta de Poluição para MS", "🗺️ Mapa e Animação"])
             
-            with tab3 if not compare_methods else tab4:
+            with tab3:
                 st.subheader("🎬 Animação de AOD 550nm")
                 st.image(results['animation'], caption=f"AOD 550nm em {city} ({start_date} a {end_date})")
                 
@@ -1109,7 +604,7 @@ if analysis_button:
                     )
             
             with tab1:
-                st.subheader(f"📊 Série Temporal e Previsão - {method_options[forecast_method]['name']}")
+                st.subheader("📊 Série Temporal e Previsão")
                 
                 # Layout de duas colunas
                 col1, col2 = st.columns([3, 2])
@@ -1129,8 +624,7 @@ if analysis_button:
                     # Dados de previsão
                     forecast_data = df_combined[df_combined['type'] == 'forecast']
                     ax.plot(forecast_data['time'], forecast_data['aod'], 
-                           marker='x', linestyle='--', color='red', 
-                           label=f'Previsão ({method_options[forecast_method]["name"]})')
+                           marker='x', linestyle='--', color='red', label='Previsão')
                     
                     # Formatar eixos
                     ax.set_title(f'AOD 550nm em {city}: Valores Observados e Previstos', fontsize=14)
@@ -1216,61 +710,8 @@ if analysis_button:
                         mime="text/csv",
                     )
             
-            # Aba de comparação de métodos (só aparece se solicitado)
-            if compare_methods and 'method_comparison' in results and results['method_comparison']:
-                with tab2:
-                    st.subheader("🔬 Comparação de Métodos de Previsão")
-                    
-                    # Gráfico comparativo
-                    fig, ax = plt.subplots(figsize=(14, 8))
-                    
-                    colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink']
-                    
-                    # Plotar dados históricos
-                    hist_data = hist_data  # Usar do tab anterior
-                    ax.plot(hist_data['time'], hist_data['aod'], 
-                           marker='o', linestyle='-', color='black', 
-                           linewidth=3, markersize=6, label='Observado', zorder=10)
-                    
-                    # Plotar cada método
-                    for i, (method_name, forecast_df) in enumerate(results['method_comparison'].items()):
-                        forecast_only = forecast_df[forecast_df['type'] == 'forecast']
-                        if not forecast_only.empty:
-                            ax.plot(forecast_only['time'], forecast_only['aod'], 
-                                   marker='x', linestyle='--', color=colors[i % len(colors)], 
-                                   linewidth=2, markersize=6, label=method_name)
-                    
-                    ax.set_title('Comparação de Métodos de Previsão de AOD', fontsize=16, fontweight='bold')
-                    ax.set_xlabel('Data/Hora', fontsize=14)
-                    ax.set_ylabel('AOD 550nm', fontsize=14)
-                    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-                    ax.grid(True, alpha=0.3)
-                    plt.xticks(rotation=45)
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    
-                    # Tabela comparativa
-                    st.subheader("📊 Resumo Estatístico por Método")
-                    
-                    comparison_stats = []
-                    for method_name, forecast_df in results['method_comparison'].items():
-                        forecast_only = forecast_df[forecast_df['type'] == 'forecast']
-                        if not forecast_only.empty:
-                            stats = {
-                                'Método': method_name,
-                                'AOD Máximo': f"{forecast_only['aod'].max():.3f}",
-                                'AOD Médio': f"{forecast_only['aod'].mean():.3f}",
-                                'AOD Mínimo': f"{forecast_only['aod'].min():.3f}",
-                                'Variabilidade': f"{forecast_only['aod'].std():.3f}"
-                            }
-                            comparison_stats.append(stats)
-                    
-                    if comparison_stats:
-                        df_stats = pd.DataFrame(comparison_stats)
-                        st.dataframe(df_stats, use_container_width=True)
-            
             # NOVA ABA: Alerta de Poluição para MS
-            with tab2 if not compare_methods else tab3:
+            with tab2:
                 st.subheader("⚠️ Alerta de Poluição para Municípios de MS")
                 
                 # Verificar se temos os dados de todas as cidades
@@ -1279,9 +720,6 @@ if analysis_button:
                     
                     # Criar uma tabela formatada e colorida com as cidades mais críticas
                     st.markdown("### 🔴 Top 20 Municípios com Maior Previsão de AOD")
-                    
-                    # Mostrar método usado
-                    st.info(f"📊 Análise realizada usando: **{method_options[forecast_method]['name']}**")
                     
                     # Adicionar legenda de cores
                     st.markdown("""
@@ -1310,8 +748,7 @@ if analysis_button:
                         'cidade': 'Município', 
                         'aod_max': 'AOD Máximo', 
                         'data_max': 'Data do Pico',
-                        'nivel': 'Nível de Alerta',
-                        'metodo': 'Método'
+                        'nivel': 'Nível de Alerta'
                     })
                     
                     # Função para colorir as linhas baseado no valor de AOD
@@ -1339,17 +776,15 @@ if analysis_button:
                     high_risk_cities = top_cities[top_cities['aod_max'] >= 0.2]
                     
                     if not high_risk_cities.empty:
-                        city_list = ""
-                        for i, row in high_risk_cities.head(3).iterrows():
-                            city_list += f"- **{row['cidade']}**: AOD {row['aod_max']:.3f} em {row['data_max']}\n"
-                        
                         st.warning(f"""
                         ### ⚠️ ALERTA DE POLUIÇÃO ATMOSFÉRICA
                         
                         Detectamos previsão de níveis elevados de AOD (≥ 0.2) para {len(high_risk_cities)} municípios nos próximos 5 dias!
                         
                         Os municípios mais críticos são:
-                        {city_list}
+                        - **{high_risk_cities.iloc[0]['cidade']}**: AOD {high_risk_cities.iloc[0]['aod_max']:.3f} em {high_risk_cities.iloc[0]['data_max']}
+                        - **{high_risk_cities.iloc[1]['cidade'] if len(high_risk_cities) > 1 else ''}**: AOD {high_risk_cities.iloc[1]['aod_max']:.3f if len(high_risk_cities) > 1 else 0} em {high_risk_cities.iloc[1]['data_max'] if len(high_risk_cities) > 1 else ''}
+                        - **{high_risk_cities.iloc[2]['cidade'] if len(high_risk_cities) > 2 else ''}**: AOD {high_risk_cities.iloc[2]['aod_max']:.3f if len(high_risk_cities) > 2 else 0} em {high_risk_cities.iloc[2]['data_max'] if len(high_risk_cities) > 2 else ''}
                         
                         Recomenda-se atenção especial a pessoas com problemas respiratórios nestas localidades.
                         """)
@@ -1415,28 +850,6 @@ if analysis_button:
 # Adicionar informações na parte inferior
 st.markdown("---")
 st.markdown("""
-### 📖 Métodos de Previsão Implementados
-
-**1. Ensemble (Recomendado)**: Combina todos os métodos com pesos otimizados para máxima precisão.
-
-**2. Regressão Linear**: Método clássico que assume tendência linear nos dados.
-
-**3. Média Móvel**: Usa a média dos últimos valores para prever o futuro.
-
-**4. Suavização Exponencial**: Pondera mais os valores recentes na previsão.
-
-**5. Ajuste Polinomial**: Usa polinômio de grau 2 para capturar tendências não-lineares.
-
-**6. Decomposição Sazonal**: Separa tendência e sazonalidade para previsões mais precisas.
-
-**7. Random Forest**: Machine learning que considera múltiplas features temporais.
-
-### 🎯 Recomendações de Uso:
-- **Ensemble**: Para máxima confiabilidade
-- **Random Forest**: Para dados com padrões complexos
-- **Sazonal**: Para dados com ciclos diários/sazonais
-- **Linear**: Para tendências simples e rápidas
-
 ### ℹ️ Sobre os dados
 - **Fonte**: Copernicus Atmosphere Monitoring Service (CAMS)
 - **Variável**: Profundidade Óptica de Aerossóis (AOD) a 550nm
@@ -1444,11 +857,16 @@ st.markdown("""
 - **Atualização**: Diária
 - **Previsão**: Até 5 dias à frente
 
-### 🔍 Novas funcionalidades:
-- **7 Métodos de Previsão**: Desde regressão linear até ensemble de ML
-- **Interface Interativa**: Botões para seleção rápida de métodos
-- **Análise Comparativa**: Compare todos os métodos simultaneamente
-- **Alerta Inteligente**: Ranking dos municípios mais críticos por método
+### 📖 Como interpretar:
+- **AOD < 0.1**: Qualidade do ar boa
+- **AOD 0.1-0.2**: Qualidade do ar moderada
+- **AOD 0.2-0.5**: Insalubre para grupos sensíveis
+- **AOD > 0.5**: Qualidade do ar perigosa
 
-Desenvolvido para monitoramento avançado de aerossóis em Mato Grosso do Sul - Brasil.
+### 🔍 Novas funcionalidades:
+- **Alerta de Poluição**: Monitoramento automático dos 79 municípios de MS
+- **Previsão de 5 dias**: Análise de tendências e picos de AOD
+- **Top 20 Municípios**: Identificação das áreas mais críticas
+
+Desenvolvido para monitoramento de aerossóis no estado de Mato Grosso do Sul - Brasil.
 """)

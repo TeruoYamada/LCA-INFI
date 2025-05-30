@@ -422,19 +422,19 @@ def ensemble_forecast(df, days=5):
         'method': 'ensemble'
     })
     # Caso tenha apenas uma dimensão de tempo
-    elif any(dim in ds[var_name].dims for dim in ['time', 'forecast_reference_time']):
-        time_dim = next(dim for dim in ds[var_name].dims if dim in ['time', 'forecast_reference_time'])
-        for t_idx in range(len(ds[time_dim])):
-            try:
-                value = float(ds[var_name].isel({
-                    time_dim: t_idx,
-                    'latitude': lat_idx,
-                    'longitude': lon_idx
-                }).values)
-                times.append(pd.to_datetime(ds[time_dim].isel({time_dim: t_idx}).values))
-                values.append(value)
-            except:
-                continue
+        elif any(dim in ds[var_name].dims for dim in ['time', 'forecast_reference_time']):
+            time_dim = next(dim for dim in ds[var_name].dims if dim in ['time', 'forecast_reference_time'])
+            for t_idx in range(len(ds[time_dim])):
+                try:
+                    value = float(ds[var_name].isel({
+                        time_dim: t_idx,
+                        'latitude': lat_idx,
+                        'longitude': lon_idx
+                    }).values)
+                    times.append(pd.to_datetime(ds[time_dim].isel({time_dim: t_idx}).values))
+                    values.append(value)
+                except:
+                    continue
     
     # Criar DataFrame
     if times and values:

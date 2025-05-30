@@ -209,45 +209,350 @@ def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
         return pd.DataFrame(columns=['time', 'aod'])
 
 # Função para prever valores futuros de AOD
-def predict_future_aod(df, days=5):  # Aumentado para 5 dias
-    """Gera uma previsão simples de AOD baseada nos dados históricos."""
-    if len(df) < 3:  # Precisa de pelo menos 3 pontos para uma previsão mínima
-        return pd.DataFrame(columns=['time', 'aod', 'type'])
+def predict_future_aod_advanced(df, days=5, method='ensemble'):
+    """
+    Gera previsões de AOD usando múltiplos métodos estatísticos.
     
-    # Preparar dados para regressão
-    df_hist = df.copy()
-    df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
+    Parâmetros:
+    - df: DataFrame com colunas 'time' e 'aod'
+    - days: número de dias para previsão
+    - method: 'linear', 'polynomial', 'arima', 'exponential', 'random_forest', 'ensemble'
     
-    # Modelo de regressão linear simples
-    X = df_hist['time_numeric'].values.reshape(-1, 1)
-    y = df_hist['aod'].values
-    model = LinearRegression()
-    model.fit(X, y)
+    Retorna:
+    - DataFrame com previsões e métricas de qualidade
+    """
     
-    # Gerar pontos futuros
-    last_time = df_hist['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]  # 4 pontos por dia (6h)
-    future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
+    if len(df) < 5:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method', 'confidence_lower', 'confidence_upper'])
     
-    # Prever valores
-    future_aod = model.predict(np.array(future_time_numeric).reshape(-1, 1))
+    # Preparar dados
+    df_work = df.copy().sort_values('time').reset_index(drop=True)
+    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds() / 3600  # horas
     
-    # Limitar valores previstos (AOD não pode ser negativo)
-    future_aod = np.maximum(future_aod, 0)
+    # Definir pontos futuros
+    last_time = df_work['time'].max()
+    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+    future_hours = [(t - df_work['time'].min()).total_seconds() / 3600 for t in future_times]
     
-    # Criar DataFrame com previsão
-    df_pred = pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'type': 'forecast'
-    })
+    predictions = {}
+    metrics = {}
     
-    # Adicionar indicador aos dados históricos
-    df_hist['type'] = 'historical'
+    # 1. REGRESSÃO LINEAR SIMPLES
+    def linear_regression():
+        X = df_work['time_numeric'].values.reshape(-1, 1)
+        y = df_work['aod'].values
+        
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        # Previsão
+        future_X = np.array(future_hours).reshape(-1, 1)
+        pred = model.predict(future_X)
+        pred = np.maximum(pred, 0)  # AOD não pode ser negativo
+        
+        # Métricas (usando validação nos últimos pontos)
+        if len(y) > 3:
+            train_pred = model.predict(X)
+            mae = mean_absolute_error(y, train_pred)
+            mse = mean_squared_error(y, train_pred)
+            r2 = r2_score(y, train_pred)
+        else:
+            mae = mse = r2 = np.nan
+            
+        return pred, {'mae': mae, 'mse': mse, 'r2': r2}
     
-    # Combinar histórico e previsão
-    result = pd.concat([df_hist[['time', 'aod', 'type']], df_pred], ignore_index=True)
-    return result
+    # 2. REGRESSÃO POLINOMIAL
+    def polynomial_regression(degree=2):
+        X = df_work['time_numeric'].values.reshape(-1, 1)
+        y = df_work['aod'].values
+        
+        # Transformação polinomial
+        poly_features = PolynomialFeatures(degree=degree)
+        X_poly = poly_features.fit_transform(X)
+        
+        model = Ridge(alpha=0.1)  # Ridge para evitar overfitting
+        model.fit(X_poly, y)
+        
+        # Previsão
+        future_X = np.array(future_hours).reshape(-1, 1)
+        future_X_poly = poly_features.transform(future_X)
+        pred = model.predict(future_X_poly)
+        pred = np.maximum(pred, 0)
+        
+        # Métricas
+        if len(y) > 3:
+            train_pred = model.predict(X_poly)
+            mae = mean_absolute_error(y, train_pred)
+            mse = mean_squared_error(y, train_pred)
+            r2 = r2_score(y, train_pred)
+        else:
+            mae = mse = r2 = np.nan
+            
+        return pred, {'mae': mae, 'mse': mse, 'r2': r2}
+    
+    # 3. MODELO ARIMA
+    def arima_forecast():
+        try:
+            y = df_work['aod'].values
+            
+            # Auto-ARIMA simplificado
+            model = ARIMA(y, order=(1, 1, 1))
+            fitted_model = model.fit()
+            
+            # Previsão
+            forecast = fitted_model.forecast(steps=len(future_times))
+            pred = np.maximum(forecast, 0)
+            
+            # Métricas
+            residuals = fitted_model.resid
+            mae = np.mean(np.abs(residuals))
+            mse = np.mean(residuals**2)
+            r2 = 1 - (np.var(residuals) / np.var(y))
+            
+            return pred, {'mae': mae, 'mse': mse, 'r2': r2}
+            
+        except Exception as e:
+            # Fallback para média móvel se ARIMA falhar
+            window = min(3, len(df_work))
+            mean_value = df_work['aod'].rolling(window=window).mean().iloc[-1]
+            pred = np.full(len(future_times), mean_value)
+            return pred, {'mae': np.nan, 'mse': np.nan, 'r2': np.nan}
+    
+    # 4. SUAVIZAÇÃO EXPONENCIAL
+    def exponential_smoothing():
+        try:
+            y = df_work['aod'].values
+            
+            # Modelo de Holt-Winters simples (sem sazonalidade)
+            model = ExponentialSmoothing(y, trend='add', seasonal=None)
+            fitted_model = model.fit()
+            
+            # Previsão
+            forecast = fitted_model.forecast(steps=len(future_times))
+            pred = np.maximum(forecast, 0)
+            
+            # Métricas
+            fitted_values = fitted_model.fittedvalues
+            residuals = y - fitted_values
+            mae = np.mean(np.abs(residuals))
+            mse = np.mean(residuals**2)
+            r2 = 1 - (np.var(residuals) / np.var(y))
+            
+            return pred, {'mae': mae, 'mse': mse, 'r2': r2}
+            
+        except Exception as e:
+            # Fallback
+            trend = np.polyfit(range(len(df_work)), df_work['aod'], 1)[0]
+            last_value = df_work['aod'].iloc[-1]
+            pred = [last_value + trend * i for i in range(1, len(future_times) + 1)]
+            pred = np.maximum(pred, 0)
+            return pred, {'mae': np.nan, 'mse': np.nan, 'r2': np.nan}
+    
+    # 5. RANDOM FOREST
+    def random_forest():
+        if len(df_work) < 10:  # RF precisa de mais dados
+            return linear_regression()
+            
+        # Features: hora do dia, dia da semana, tendência temporal
+        features = []
+        for i, row in df_work.iterrows():
+            features.append([
+                row['time_numeric'],
+                row['time'].hour,
+                row['time'].weekday(),
+                i  # índice sequencial
+            ])
+        
+        X = np.array(features)
+        y = df_work['aod'].values
+        
+        model = RandomForestRegressor(n_estimators=50, random_state=42)
+        model.fit(X, y)
+        
+        # Previsão
+        future_features = []
+        for i, t in enumerate(future_times):
+            future_features.append([
+                future_hours[i],
+                t.hour,
+                t.weekday(),
+                len(df_work) + i
+            ])
+        
+        future_X = np.array(future_features)
+        pred = model.predict(future_X)
+        pred = np.maximum(pred, 0)
+        
+        # Métricas
+        train_pred = model.predict(X)
+        mae = mean_absolute_error(y, train_pred)
+        mse = mean_squared_error(y, train_pred)
+        r2 = r2_score(y, train_pred)
+        
+        return pred, {'mae': mae, 'mse': mse, 'r2': r2}
+    
+    # Executar métodos conforme solicitado
+    if method == 'linear' or method == 'ensemble':
+        predictions['linear'], metrics['linear'] = linear_regression()
+    
+    if method == 'polynomial' or method == 'ensemble':
+        predictions['polynomial'], metrics['polynomial'] = polynomial_regression()
+    
+    if method == 'arima' or method == 'ensemble':
+        predictions['arima'], metrics['arima'] = arima_forecast()
+    
+    if method == 'exponential' or method == 'ensemble':
+        predictions['exponential'], metrics['exponential'] = exponential_smoothing()
+    
+    if method == 'random_forest' or method == 'ensemble':
+        predictions['random_forest'], metrics['random_forest'] = random_forest()
+    
+    # Se método específico foi escolhido, retornar apenas ele
+    if method != 'ensemble':
+        pred_values = predictions[method]
+        method_metrics = metrics[method]
+        
+        # Criar intervalos de confiança simples (± 20% da previsão)
+        confidence_range = pred_values * 0.2
+        
+        df_result = pd.DataFrame({
+            'time': future_times,
+            'aod': pred_values,
+            'type': 'forecast',
+            'method': method,
+            'confidence_lower': pred_values - confidence_range,
+            'confidence_upper': pred_values + confidence_range
+        })
+        
+        # Adicionar dados históricos
+        df_hist = df_work[['time', 'aod']].copy()
+        df_hist['type'] = 'historical'
+        df_hist['method'] = method
+        df_hist['confidence_lower'] = df_hist['aod']
+        df_hist['confidence_upper'] = df_hist['aod']
+        
+        return pd.concat([df_hist, df_result], ignore_index=True)
+    
+    # ENSEMBLE: Combinar previsões com pesos baseados na qualidade
+    else:
+        # Calcular pesos baseados no R²
+        weights = {}
+        total_r2 = 0
+        
+        for pred_method, metric in metrics.items():
+            r2_value = metric.get('r2', 0)
+            if np.isnan(r2_value) or r2_value < 0:
+                r2_value = 0.1  # peso mínimo
+            weights[pred_method] = max(r2_value, 0.1)
+            total_r2 += weights[pred_method]
+        
+        # Normalizar pesos
+        for pred_method in weights:
+            weights[pred_method] /= total_r2
+        
+        # Combinar previsões
+        ensemble_pred = np.zeros(len(future_times))
+        for pred_method, pred_values in predictions.items():
+            ensemble_pred += pred_values * weights[pred_method]
+        
+        # Calcular intervalo de confiança baseado na variabilidade entre métodos
+        all_preds = np.array(list(predictions.values()))
+        pred_std = np.std(all_preds, axis=0)
+        
+        df_result = pd.DataFrame({
+            'time': future_times,
+            'aod': ensemble_pred,
+            'type': 'forecast',
+            'method': 'ensemble',
+            'confidence_lower': ensemble_pred - 1.96 * pred_std,
+            'confidence_upper': ensemble_pred + 1.96 * pred_std
+        })
+        
+        # Adicionar dados históricos
+        df_hist = df_work[['time', 'aod']].copy()
+        df_hist['type'] = 'historical'
+        df_hist['method'] = 'ensemble'
+        df_hist['confidence_lower'] = df_hist['aod']
+        df_hist['confidence_upper'] = df_hist['aod']
+        
+        # Adicionar informações sobre os métodos individuais
+        individual_results = []
+        for pred_method, pred_values in predictions.items():
+            df_individual = pd.DataFrame({
+                'time': future_times,
+                'aod': pred_values,
+                'type': 'forecast_individual',
+                'method': pred_method,
+                'confidence_lower': pred_values,
+                'confidence_upper': pred_values
+            })
+            individual_results.append(df_individual)
+        
+        # Combinar todos os resultados
+        all_results = [df_hist, df_result] + individual_results
+        final_df = pd.concat(all_results, ignore_index=True)
+        
+        # Adicionar informações sobre a qualidade dos métodos
+        final_df.attrs['metrics'] = metrics
+        final_df.attrs['weights'] = weights
+        
+        return final_df
+
+# Função para avaliar e comparar métodos
+def evaluate_prediction_methods(df, test_size=0.3):
+    """
+    Avalia diferentes métodos de previsão usando validação temporal.
+    """
+    if len(df) < 10:
+        return None
+    
+    # Dividir dados em treino e teste (temporal)
+    split_idx = int(len(df) * (1 - test_size))
+    train_df = df.iloc[:split_idx].copy()
+    test_df = df.iloc[split_idx:].copy()
+    
+    methods = ['linear', 'polynomial', 'arima', 'exponential', 'random_forest']
+    results = {}
+    
+    for method in methods:
+        try:
+            # Fazer previsão para o período de teste
+            forecast_df = predict_future_aod_advanced(
+                train_df, 
+                days=len(test_df)//4 + 1, 
+                method=method
+            )
+            
+            # Extrair apenas previsões
+            predictions = forecast_df[forecast_df['type'] == 'forecast']['aod'].values
+            
+            # Ajustar tamanhos se necessário
+            min_len = min(len(predictions), len(test_df))
+            if min_len > 0:
+                pred_subset = predictions[:min_len]
+                actual_subset = test_df['aod'].values[:min_len]
+                
+                # Calcular métricas
+                mae = mean_absolute_error(actual_subset, pred_subset)
+                mse = mean_squared_error(actual_subset, pred_subset)
+                rmse = np.sqrt(mse)
+                
+                results[method] = {
+                    'MAE': mae,
+                    'MSE': mse,
+                    'RMSE': rmse,
+                    'MAPE': np.mean(np.abs((actual_subset - pred_subset) / actual_subset)) * 100
+                }
+        except Exception as e:
+            results[method] = {
+                'MAE': np.inf,
+                'MSE': np.inf,
+                'RMSE': np.inf,
+                'MAPE': np.inf,
+                'Error': str(e)
+            }
+    
+    return results
 
 # NOVA FUNÇÃO: Analisar AOD para todas as cidades e gerar tabela de alertas
 def analyze_all_cities(ds, aod_var, cities_dict):
@@ -575,6 +880,14 @@ with st.sidebar.expander("Configurações da Visualização"):
     animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
     colormap = st.selectbox("Paleta de Cores", 
                           ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis"])
+st.sidebar.subheader("Método de Previsão")
+prediction_method = st.sidebar.selectbox(
+    "Selecione o método de previsão",
+    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
+    index=0  # ensemble como padrão)
+
+# No processamento:
+df_forecast = predict_future_aod_advanced(df_timeseries, days=5, method=prediction_method)
 
 # Agora, vamos adicionar o botão logo após o texto introdutório
 st.markdown("### 🚀 Iniciar Análise de AOD")

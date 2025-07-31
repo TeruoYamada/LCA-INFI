@@ -1067,7 +1067,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     st.info("Dados de análise estadual não disponíveis. Mostrando apenas análise local.")
             
             # Nova aba para análise PM
-            with tab4:
+           with tab4:
                 st.subheader("📈 Análise Detalhada de Material Particulado")
                 
                 # Informações sobre a metodologia
@@ -1094,4 +1094,285 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     **Referências:**
                     - Estudos de validação MAIAC na América do Sul
                     - Calibração regional para biomassa queimada
+                    - Ajustes sazonais baseados em AERONET
                     """)
+                
+                # Análise comparativa
+                if not results['top_pollution'].empty:
+                    st.subheader("🔍 Análise Comparativa entre Municípios")
+                    
+                    # Criar scatter plot AOD vs PM2.5
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+                    
+                    # Plot AOD vs PM2.5
+                    scatter1 = ax1.scatter(results['top_pollution']['aod_max'], 
+                                         results['top_pollution']['pm25_max'],
+                                         c=results['top_pollution']['aqi_max'],
+                                         cmap='RdYlGn_r', s=100, alpha=0.7)
+                    ax1.set_xlabel('AOD Máximo')
+                    ax1.set_ylabel('PM2.5 Máximo (μg/m³)')
+                    ax1.set_title('Relação AOD vs PM2.5')
+                    ax1.grid(True, alpha=0.3)
+                    
+                    # Adicionar linha de tendência
+                    z = np.polyfit(results['top_pollution']['aod_max'], 
+                                  results['top_pollution']['pm25_max'], 1)
+                    p = np.poly1d(z)
+                    ax1.plot(results['top_pollution']['aod_max'], 
+                            p(results['top_pollution']['aod_max']), 
+                            "r--", alpha=0.8, label=f'y={z[0]:.1f}x+{z[1]:.1f}')
+                    ax1.legend()
+                    
+                    # Colorbar
+                    cbar1 = plt.colorbar(scatter1, ax=ax1)
+                    cbar1.set_label('IQA', rotation=270, labelpad=20)
+                    
+                    # Plot PM2.5 vs PM10
+                    scatter2 = ax2.scatter(results['top_pollution']['pm25_max'], 
+                                         results['top_pollution']['pm10_max'],
+                                         c=results['top_pollution']['aqi_max'],
+                                         cmap='RdYlGn_r', s=100, alpha=0.7)
+                    ax2.set_xlabel('PM2.5 Máximo (μg/m³)')
+                    ax2.set_ylabel('PM10 Máximo (μg/m³)')
+                    ax2.set_title('Relação PM2.5 vs PM10')
+                    ax2.grid(True, alpha=0.3)
+                    
+                    # Adicionar linha de referência PM10 = 1.5 * PM2.5
+                    pm25_range = np.array([0, results['top_pollution']['pm25_max'].max()])
+                    ax2.plot(pm25_range, pm25_range * 1.5, 'b--', alpha=0.5, label='PM10 = 1.5×PM2.5')
+                    ax2.legend()
+                    
+                    # Colorbar
+                    cbar2 = plt.colorbar(scatter2, ax=ax2)
+                    cbar2.set_label('IQA', rotation=270, labelpad=20)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    
+                    # Estatísticas regionais
+                    st.subheader("📊 Estatísticas Regionais")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    avg_pm25 = results['top_pollution']['pm25_max'].mean()
+                    avg_pm10 = results['top_pollution']['pm10_max'].mean()
+                    cities_above_who_pm25 = len(results['top_pollution'][results['top_pollution']['pm25_max'] > 25])
+                    cities_above_who_pm10 = len(results['top_pollution'][results['top_pollution']['pm10_max'] > 50])
+                    
+                    col1.metric("PM2.5 Médio", f"{avg_pm25:.1f} μg/m³")
+                    col2.metric("PM10 Médio", f"{avg_pm10:.1f} μg/m³")
+                    col3.metric("Cidades > Limite PM2.5", cities_above_who_pm25)
+                    col4.metric("Cidades > Limite PM10", cities_above_who_pm10)
+                    
+                    # Mapa de calor temporal
+                    if 'timeseries' in results and not results['timeseries'].empty:
+                        st.subheader("🗓️ Evolução Temporal - " + city)
+                        
+                        # Preparar dados para heatmap
+                        df_heat = results['forecast'].copy()
+                        df_heat['hour'] = df_heat['time'].dt.hour
+                        df_heat['date'] = df_heat['time'].dt.date
+                        
+                        # Criar pivot table para PM2.5
+                        pivot_pm25 = df_heat.pivot_table(values='pm25', index='hour', columns='date', aggfunc='mean')
+                        
+                        # Criar heatmap
+                        fig, ax = plt.subplots(figsize=(12, 6))
+                        im = ax.imshow(pivot_pm25.values, cmap='YlOrRd', aspect='auto')
+                        
+                        # Configurar eixos
+                        ax.set_xticks(range(len(pivot_pm25.columns)))
+                        ax.set_xticklabels([d.strftime('%d/%m') for d in pivot_pm25.columns])
+                        ax.set_yticks(range(len(pivot_pm25.index)))
+                        ax.set_yticklabels([f'{h:02d}h' for h in pivot_pm25.index])
+                        
+                        ax.set_xlabel('Data')
+                        ax.set_ylabel('Hora do Dia')
+                        ax.set_title(f'Variação Horária de PM2.5 em {city}')
+                        
+                        # Colorbar
+                        cbar = plt.colorbar(im, ax=ax)
+                        cbar.set_label('PM2.5 (μg/m³)', rotation=270, labelpad=20)
+                        
+                        # Adicionar valores nas células
+                        for i in range(len(pivot_pm25.index)):
+                            for j in range(len(pivot_pm25.columns)):
+                                value = pivot_pm25.iloc[i, j]
+                                if not np.isnan(value):
+                                    text_color = 'white' if value > 50 else 'black'
+                                    ax.text(j, i, f'{value:.0f}', ha='center', va='center', 
+                                           color=text_color, fontsize=8)
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                
+                # Informações sobre impactos na saúde
+                st.subheader("🏥 Impactos na Saúde")
+                
+                st.markdown("""
+                ### Efeitos do Material Particulado na Saúde
+                
+                **PM2.5 (Partículas Finas)**
+                - Penetram profundamente nos pulmões e corrente sanguínea
+                - Associadas a doenças cardiovasculares e respiratórias
+                - Podem causar câncer de pulmão com exposição prolongada
+                
+                **PM10 (Partículas Inaláveis)**
+                - Afetam principalmente o sistema respiratório superior
+                - Agravam asma e doenças pulmonares
+                - Causam irritação nos olhos, nariz e garganta
+                
+                **Grupos de Risco:**
+                - 👶 Crianças
+                - 👴 Idosos
+                - 🫁 Pessoas com doenças respiratórias
+                - ❤️ Pessoas com doenças cardiovasculares
+                - 🤰 Gestantes
+                """)
+                
+                # Recomendações baseadas nos níveis
+                st.subheader("🛡️ Medidas de Proteção")
+                
+                protection_measures = {
+                    "Boa": {
+                        "color": "green",
+                        "icon": "✅",
+                        "measures": [
+                            "Aproveite para atividades ao ar livre",
+                            "Ótimo momento para exercícios externos",
+                            "Mantenha janelas abertas para ventilação"
+                        ]
+                    },
+                    "Moderada": {
+                        "color": "yellow",
+                        "icon": "⚠️",
+                        "measures": [
+                            "Pessoas sensíveis devem reduzir atividades intensas ao ar livre",
+                            "Evite exercícios prolongados em áreas de tráfego intenso",
+                            "Considere usar máscara em áreas muito poluídas"
+                        ]
+                    },
+                    "Insalubre para Grupos Sensíveis": {
+                        "color": "orange",
+                        "icon": "🚨",
+                        "measures": [
+                            "Grupos sensíveis devem evitar atividades ao ar livre",
+                            "Use máscaras N95/PFF2 se precisar sair",
+                            "Mantenha janelas fechadas e use purificadores de ar",
+                            "Evite áreas de tráfego intenso"
+                        ]
+                    },
+                    "Insalubre": {
+                        "color": "red",
+                        "icon": "🚫",
+                        "measures": [
+                            "Todos devem evitar atividades ao ar livre",
+                            "Use máscaras N95/PFF2 ao sair",
+                            "Mantenha ambientes internos fechados",
+                            "Considere adiar atividades não essenciais",
+                            "Hidrate-se frequentemente"
+                        ]
+                    },
+                    "Muito Insalubre": {
+                        "color": "purple",
+                        "icon": "☠️",
+                        "measures": [
+                            "Evite qualquer atividade ao ar livre",
+                            "Permaneça em ambientes fechados com ar filtrado",
+                            "Use máscaras N95/PFF2 mesmo em ambientes internos se necessário",
+                            "Procure atendimento médico se tiver sintomas respiratórios",
+                            "Cancele atividades não essenciais"
+                        ]
+                    }
+                }
+                
+                # Mostrar medidas para cada categoria presente nos dados
+                if 'top_pollution' in results and not results['top_pollution'].empty:
+                    categories_present = results['top_pollution']['categoria'].unique()
+                    
+                    for category in categories_present:
+                        if category in protection_measures:
+                            info = protection_measures[category]
+                            st.markdown(f"""
+                            <div style="padding:10px; border-radius:5px; border: 2px solid {info['color']}; margin:10px 0;">
+                            <h4>{info['icon']} {category}</h4>
+                            """, unsafe_allow_html=True)
+                            
+                            for measure in info['measures']:
+                                st.markdown(f"- {measure}")
+                            
+                            st.markdown("</div>", unsafe_allow_html=True)
+        
+        else:
+            st.error("❌ Não foi possível obter dados. Verifique os parâmetros e tente novamente.")
+            
+    except Exception as e:
+        st.error(f"❌ Ocorreu um erro: {str(e)}")
+        st.write("Por favor, verifique os parâmetros e tente novamente.")
+
+# Rodapé com informações
+st.markdown("---")
+st.markdown("""
+### ℹ️ Sobre o Sistema
+
+**Dados e Metodologia:**
+- 🛰️ **Fonte**: Copernicus Atmosphere Monitoring Service (CAMS)
+- 📊 **Variável Principal**: AOD (Aerosol Optical Depth) a 550nm
+- 🔬 **Conversão PM**: Baseada em literatura científica regional
+- 🔥 **Ajustes Sazonais**: Correções específicas para queimadas
+- ⏱️ **Resolução Temporal**: 3 horas
+- 📅 **Previsão**: Até 5 dias
+
+**Índice de Qualidade do Ar (IQA):**
+- 0-50: Boa (Verde)
+- 51-100: Moderada (Amarelo)
+- 101-150: Insalubre para Grupos Sensíveis (Laranja)
+- 151-200: Insalubre (Vermelho)
+- 201-300: Muito Insalubre (Roxo)
+- 301-500: Perigosa (Marrom)
+
+**Limites de Referência OMS (24h):**
+- PM2.5: 25 μg/m³
+- PM10: 50 μg/m³
+
+### 🚀 Funcionalidades Implementadas
+
+1. **Visualização Centralizada**: Mapa focado no estado de MS
+2. **Estimativa de PM**: Conversão AOD → PM2.5/PM10 com ajustes regionais
+3. **Correção Sazonal**: Multiplicadores específicos para período de queimadas
+4. **Cálculo de IQA**: Índice de Qualidade do Ar padronizado
+5. **Alertas Municipais**: Ranking dos 20 municípios mais críticos
+6. **Análise Temporal**: Previsão de 5 dias com resolução horária
+7. **Recomendações de Saúde**: Orientações baseadas nos níveis de poluição
+
+### 📧 Contato e Suporte
+
+Desenvolvido para monitoramento ambiental e saúde pública em Mato Grosso do Sul.
+Para dúvidas ou sugestões, entre em contato com a equipe de desenvolvimento.
+
+**Última atualização**: {datetime.now().strftime('%d/%m/%Y')}
+""")
+
+# CSS customizado para melhorar a aparência
+st.markdown("""
+<style>
+    .stProgress > div > div > div > div {
+        background-color: #4CAF50;
+    }
+    
+    .metric-container {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px 0;
+    }
+    
+    div[data-testid="metric-container"] {
+        background-color: #f0f2f6;
+        border: 1px solid #ddd;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 5px 0;
+    }
+</style>
+""", unsafe_allow_html=True)

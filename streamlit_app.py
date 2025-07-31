@@ -1303,10 +1303,10 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                             
                             st.markdown("</div>", unsafe_allow_html=True)
         
-        else:
+    else:
             st.error("❌ Não foi possível obter dados. Verifique os parâmetros e tente novamente.")
             
-    except Exception as e:
+except Exception as e:
         st.error(f"❌ Ocorreu um erro: {str(e)}")
         st.write("Por favor, verifique os parâmetros e tente novamente.")
 

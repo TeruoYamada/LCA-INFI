@@ -1067,7 +1067,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     st.info("Dados de análise estadual não disponíveis. Mostrando apenas análise local.")
             
             # Nova aba para análise PM
-           with tab4:
+        with tab4:
                 st.subheader("📈 Análise Detalhada de Material Particulado")
                 
                 # Informações sobre a metodologia

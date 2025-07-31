@@ -1094,3 +1094,4 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     **Referências:**
                     - Estudos de validação MAIAC na América do Sul
                     - Calibração regional para biomassa queimada
+                    """)

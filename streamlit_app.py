@@ -16,10 +16,9 @@ from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 from sklearn.linear_model import LinearRegression
 import matplotlib.dates as mdates
-from scipy import stats
 
 # Configuração inicial da página
-st.set_page_config(layout="wide", page_title="Monitor AOD/PM - MS", page_icon="🌍")
+st.set_page_config(layout="wide", page_title="Visualizador de AOD - MS")
 
 # ✅ Carregar autenticação a partir do secrets.toml
 try:
@@ -30,18 +29,22 @@ except Exception as e:
     st.error("❌ Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
     st.stop()
 
-# Função para baixar shapefile dos municípios de MS
+# Função para baixar shapefile dos municípios de MS (simplificado)
 @st.cache_data
 def load_ms_municipalities():
     try:
+        # URL para um shapefile de municípios do MS (substitua pelo URL correto)
+        # Este é um exemplo - você precisará de um URL real para os dados
         url = "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/" + \
               "municipio_2022/UFs/MS/MS_Municipios_2022.zip"
         
+        # Tentativa de carregar os dados
         try:
             gdf = gpd.read_file(url)
             return gdf
         except:
-            # Fallback: criar geodataframe simplificado
+            # Fallback: criar geodataframe simplificado com alguns municípios
+            # Isso é apenas para demonstração se não conseguir carregar o shapefile real
             data = {
                 'NM_MUN': ['Campo Grande', 'Dourados', 'Três Lagoas', 'Corumbá', 'Ponta Porã'],
                 'geometry': [
@@ -56,57 +59,11 @@ def load_ms_municipalities():
             return gdf
     except Exception as e:
         st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
+        # Retornar DataFrame vazio com estrutura esperada
         return gpd.GeoDataFrame(columns=['NM_MUN', 'geometry'], crs="EPSG:4326")
 
-# Função para adicionar shape do município ao mapa
-def add_municipality_shape(ax, city_name, ms_shapes):
-    """
-    Adiciona o contorno do município ao mapa do matplotlib/cartopy
-    """
-    try:
-        # Buscar o município no GeoDataFrame
-        city_shape = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city_name.upper()]
-        
-        if not city_shape.empty:
-            # Pegar a geometria do município
-            geometry = city_shape.geometry.iloc[0]
-            
-            # Verificar se é um Polygon ou MultiPolygon
-            if hasattr(geometry, 'geoms'):  # MultiPolygon
-                for geom in geometry.geoms:
-                    if hasattr(geom, 'exterior'):
-                        # Extrair coordenadas do contorno
-                        coords = list(geom.exterior.coords)
-                        lons, lats = zip(*coords)
-                        ax.plot(lons, lats, color='red', linewidth=3, 
-                               transform=ccrs.PlateCarree(), alpha=0.9,
-                               label=f'Limite de {city_name}')
-                        
-                        # Adicionar preenchimento semi-transparente
-                        ax.fill(lons, lats, color='red', alpha=0.15, 
-                               transform=ccrs.PlateCarree())
-            else:  # Polygon simples
-                if hasattr(geometry, 'exterior'):
-                    coords = list(geometry.exterior.coords)
-                    lons, lats = zip(*coords)
-                    ax.plot(lons, lats, color='red', linewidth=3, 
-                           transform=ccrs.PlateCarree(), alpha=0.9,
-                           label=f'Limite de {city_name}')
-                    
-                    # Adicionar preenchimento semi-transparente
-                    ax.fill(lons, lats, color='red', alpha=0.15, 
-                           transform=ccrs.PlateCarree())
-            
-            return True
-        else:
-            st.warning(f"Shape do município {city_name} não encontrado")
-            return False
-            
-    except Exception as e:
-        st.warning(f"Erro ao adicionar shape do município: {str(e)}")
-        return False
-
 # 🎯 Lista completa dos municípios de MS com coordenadas
+# Expandida para incluir todos os 79 municípios do MS
 cities = {
     "Água Clara": [-20.4453, -52.8792],
     "Alcinópolis": [-18.3255, -53.7042],
@@ -189,153 +146,28 @@ cities = {
     "Vicentina": [-22.4098, -54.4415]
 }
 
-# Coordenadas do centro geográfico de MS para centralizar o mapa
-MS_CENTER_LAT = -20.5147
-MS_CENTER_LON = -54.5416
-
 # Títulos e introdução
-st.title("🌍 Monitoramento AOD e Estimativa de PM2.5/PM10 - Mato Grosso do Sul")
+st.title("🌀 Monitoramento e Previsão de AOD (550nm) - Mato Grosso do Sul")
 st.markdown("""
-### Sistema Integrado de Monitoramento da Qualidade do Ar
-
-Este aplicativo monitora a Profundidade Óptica de Aerossóis (AOD) e estima as concentrações de 
-Material Particulado (PM2.5 e PM10) para todos os municípios de Mato Grosso do Sul.
-
-**Novidades desta versão:**
-- 🎯 Visualização centralizada no município selecionado
-- 🗺️ **Shape do município destacado no mapa**
-- 🔬 Estimativa de PM2.5 e PM10 baseada em literatura científica regional
-- 🔥 Ajustes específicos para períodos de queimadas
-- 📊 Índice de Qualidade do Ar (IQA) calculado
+Este aplicativo permite visualizar e analisar dados de Profundidade Óptica de Aerossóis (AOD) a 550nm 
+para municípios de Mato Grosso do Sul. Os dados são obtidos em tempo real do CAMS (Copernicus Atmosphere 
+Monitoring Service).
 """)
 
-# Função para converter AOD em PM2.5 e PM10
-def aod_to_pm(aod, season='normal', fire_detected=False, humidity=50):
-    """
-    Converte AOD em PM2.5 e PM10 usando fórmulas regionais para América do Sul.
-    
-    Parâmetros:
-    - aod: valor de AOD
-    - season: 'dry' (maio-setembro) ou 'normal'
-    - fire_detected: True se houver detecção de queimadas
-    - humidity: umidade relativa (%)
-    
-    Retorna:
-    - pm25: concentração estimada de PM2.5 (μg/m³)
-    - pm10: concentração estimada de PM10 (μg/m³)
-    """
-    
-    # Fator de conversão base para América do Sul (literatura)
-    if season == 'dry':
-        # Durante estação seca, aerossóis de queimadas dominam
-        eta_pm25_base = 110  # μg/m³ por unidade de AOD
-        eta_pm10_base = 165  # PM10 é ~1.5x PM2.5 em queimadas
-    else:
-        # Estação úmida/normal
-        eta_pm25_base = 85
-        eta_pm10_base = 140
-    
-    # Ajuste para queimadas (multiplicador de 1.5-2.5x conforme literatura)
-    if fire_detected:
-        fire_multiplier = 2.0 if season == 'dry' else 1.5
-    else:
-        fire_multiplier = 1.0
-    
-    # Correção de umidade (higroscopic growth)
-    # f(RH) = (1 - RH/100)^(-γ) onde γ ≈ 0.7 para aerossóis regionais
-    humidity_correction = (1 - humidity/100) ** (-0.7) if humidity < 95 else 3.5
-    
-    # Cálculo final com todas as correções
-    pm25 = aod * eta_pm25_base * fire_multiplier * humidity_correction
-    pm10 = aod * eta_pm10_base * fire_multiplier * humidity_correction
-    
-    # Adicionar componente de background (7-10 μg/m³ para PM2.5)
-    pm25 += 8
-    pm10 += 15
-    
-    # Limitar valores extremos
-    pm25 = min(pm25, 500)  # Limite superior realista
-    pm10 = min(pm10, 800)
-    
-    return pm25, pm10
-
-# Função para calcular IQA (Índice de Qualidade do Ar)
-def calculate_aqi(pm25, pm10):
-    """
-    Calcula o Índice de Qualidade do Ar baseado em PM2.5 e PM10.
-    Usa os padrões da EPA adaptados para o Brasil.
-    """
-    # Breakpoints para PM2.5 (μg/m³)
-    pm25_breakpoints = [
-        (0, 12, 0, 50),      # Boa
-        (12.1, 35.4, 51, 100),  # Moderada
-        (35.5, 55.4, 101, 150), # Insalubre para grupos sensíveis
-        (55.5, 150.4, 151, 200), # Insalubre
-        (150.5, 250.4, 201, 300), # Muito Insalubre
-        (250.5, 500, 301, 500)  # Perigosa
-    ]
-    
-    # Breakpoints para PM10 (μg/m³)
-    pm10_breakpoints = [
-        (0, 54, 0, 50),
-        (55, 154, 51, 100),
-        (155, 254, 101, 150),
-        (255, 354, 151, 200),
-        (355, 424, 201, 300),
-        (425, 600, 301, 500)
-    ]
-    
-    def calc_sub_index(concentration, breakpoints):
-        for bp_lo, bp_hi, i_lo, i_hi in breakpoints:
-            if bp_lo <= concentration <= bp_hi:
-                return ((i_hi - i_lo) / (bp_hi - bp_lo)) * (concentration - bp_lo) + i_lo
-        return 500  # Máximo se exceder todos os breakpoints
-    
-    aqi_pm25 = calc_sub_index(pm25, pm25_breakpoints)
-    aqi_pm10 = calc_sub_index(pm10, pm10_breakpoints)
-    
-    # IQA é o maior dos dois
-    aqi = max(aqi_pm25, aqi_pm10)
-    
-    # Categoria
-    if aqi <= 50:
-        category = "Boa"
-        color = "green"
-    elif aqi <= 100:
-        category = "Moderada"
-        color = "yellow"
-    elif aqi <= 150:
-        category = "Insalubre para Grupos Sensíveis"
-        color = "orange"
-    elif aqi <= 200:
-        category = "Insalubre"
-        color = "red"
-    elif aqi <= 300:
-        category = "Muito Insalubre"
-        color = "purple"
-    else:
-        category = "Perigosa"
-        color = "maroon"
-    
-    return aqi, category, color
-
-# Função para detectar período de queimadas
-def is_fire_season(date):
-    """Determina se a data está no período típico de queimadas (maio-setembro)."""
-    month = date.month
-    return 5 <= month <= 9
-
-# Função melhorada para extrair valores de AOD
+# Função para extrair valores de AOD para um ponto específico
 def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
     """Extrai série temporal de um ponto específico do dataset."""
     lat_idx = np.abs(ds.latitude.values - lat).argmin()
     lon_idx = np.abs(ds.longitude.values - lon).argmin()
     
+    # Identificar as dimensões temporais
     time_dims = [dim for dim in ds[var_name].dims if 'time' in dim or 'forecast' in dim]
     
+    # Criar dataframe para armazenar valores por tempo
     times = []
     values = []
     
+    # Se tivermos forecast_reference_time e forecast_period
     if 'forecast_reference_time' in ds[var_name].dims and 'forecast_period' in ds[var_name].dims:
         for t_idx, ref_time in enumerate(ds.forecast_reference_time.values):
             for p_idx, period in enumerate(ds.forecast_period.values):
@@ -347,11 +179,13 @@ def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
                         longitude=lon_idx
                     ).values)
                     
+                    # Calcular o tempo real somando o período à referência
                     actual_time = pd.to_datetime(ref_time) + pd.to_timedelta(period, unit='h')
                     times.append(actual_time)
                     values.append(value)
                 except:
                     continue
+    # Caso tenha apenas uma dimensão de tempo
     elif any(dim in ds[var_name].dims for dim in ['time', 'forecast_reference_time']):
         time_dim = next(dim for dim in ds[var_name].dims if dim in ['time', 'forecast_reference_time'])
         for t_idx in range(len(ds[time_dim])):
@@ -366,167 +200,430 @@ def extract_point_timeseries(ds, lat, lon, var_name='aod550'):
             except:
                 continue
     
+    # Criar DataFrame
     if times and values:
         df = pd.DataFrame({'time': times, 'aod': values})
         df = df.sort_values('time').reset_index(drop=True)
-        
-        # Adicionar estimativas de PM
-        df['is_fire_season'] = df['time'].apply(is_fire_season)
-        df['season'] = df['is_fire_season'].apply(lambda x: 'dry' if x else 'normal')
-        
-        # Calcular PM2.5 e PM10
-        pm_values = df.apply(lambda row: aod_to_pm(
-            row['aod'], 
-            season=row['season'],
-            fire_detected=(row['aod'] > 0.3 and row['is_fire_season']),
-            humidity=60  # Valor médio, idealmente seria obtido dos dados meteorológicos
-        ), axis=1)
-        
-        df['pm25'] = pm_values.apply(lambda x: x[0])
-        df['pm10'] = pm_values.apply(lambda x: x[1])
-        
-        # Calcular IQA
-        aqi_values = df.apply(lambda row: calculate_aqi(row['pm25'], row['pm10']), axis=1)
-        df['aqi'] = aqi_values.apply(lambda x: x[0])
-        df['aqi_category'] = aqi_values.apply(lambda x: x[1])
-        df['aqi_color'] = aqi_values.apply(lambda x: x[2])
-        
         return df
     else:
-        return pd.DataFrame(columns=['time', 'aod', 'pm25', 'pm10', 'aqi', 'aqi_category'])
+        return pd.DataFrame(columns=['time', 'aod'])
 
-# Função para prever valores futuros
-def predict_future_values(df, days=5):
-    """Gera previsão para AOD e PM."""
-    if len(df) < 3:
-        return pd.DataFrame(columns=['time', 'aod', 'pm25', 'pm10', 'aqi', 'type'])
+# Função para prever valores futuros de AOD
+def predict_future_aod_advanced(df, days=5, method='ensemble'):
+    """
+    Gera previsões de AOD usando múltiplos métodos estatísticos.
     
-    df_hist = df.copy()
-    df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
+    Parâmetros:
+    - df: DataFrame com colunas 'time' e 'aod'
+    - days: número de dias para previsão
+    - method: 'linear', 'polynomial', 'arima', 'exponential', 'random_forest', 'ensemble'
     
-    # Modelos separados para AOD, PM2.5 e PM10
-    X = df_hist['time_numeric'].values.reshape(-1, 1)
+    Retorna:
+    - DataFrame com previsões e métricas de qualidade
+    """
     
-    model_aod = LinearRegression()
-    model_aod.fit(X, df_hist['aod'].values)
+    if len(df) < 5:
+        return pd.DataFrame(columns=['time', 'aod', 'type', 'method', 'confidence_lower', 'confidence_upper'])
     
-    model_pm25 = LinearRegression()
-    model_pm25.fit(X, df_hist['pm25'].values)
+    # Preparar dados
+    df_work = df.copy().sort_values('time').reset_index(drop=True)
+    df_work['time_numeric'] = (df_work['time'] - df_work['time'].min()).dt.total_seconds() / 3600  # horas
     
-    model_pm10 = LinearRegression()
-    model_pm10.fit(X, df_hist['pm10'].values)
-    
-    # Gerar pontos futuros
-    last_time = df_hist['time'].max()
+    # Definir pontos futuros
+    last_time = df_work['time'].max()
     future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
-    future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
+    future_hours = [(t - df_work['time'].min()).total_seconds() / 3600 for t in future_times]
     
-    # Prever valores
-    future_aod = model_aod.predict(np.array(future_time_numeric).reshape(-1, 1))
-    future_pm25 = model_pm25.predict(np.array(future_time_numeric).reshape(-1, 1))
-    future_pm10 = model_pm10.predict(np.array(future_time_numeric).reshape(-1, 1))
+    predictions = {}
+    metrics = {}
     
-    # Limitar valores
-    future_aod = np.maximum(future_aod, 0)
-    future_pm25 = np.maximum(future_pm25, 0)
-    future_pm10 = np.maximum(future_pm10, 0)
+    # 1. REGRESSÃO LINEAR SIMPLES
+    def linear_regression():
+        X = df_work['time_numeric'].values.reshape(-1, 1)
+        y = df_work['aod'].values
+        
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        # Previsão
+        future_X = np.array(future_hours).reshape(-1, 1)
+        pred = model.predict(future_X)
+        pred = np.maximum(pred, 0)  # AOD não pode ser negativo
+        
+        # Métricas (usando validação nos últimos pontos)
+        if len(y) > 3:
+            train_pred = model.predict(X)
+            mae = mean_absolute_error(y, train_pred)
+            mse = mean_squared_error(y, train_pred)
+            r2 = r2_score(y, train_pred)
+        else:
+            mae = mse = r2 = np.nan
+            
+        return pred, {'mae': mae, 'mse': mse, 'r2': r2}
     
-    # Calcular IQA para previsões
-    future_aqi = []
-    future_categories = []
-    future_colors = []
+    # 2. REGRESSÃO POLINOMIAL
+    def polynomial_regression(degree=2):
+        X = df_work['time_numeric'].values.reshape(-1, 1)
+        y = df_work['aod'].values
+        
+        # Transformação polinomial
+        poly_features = PolynomialFeatures(degree=degree)
+        X_poly = poly_features.fit_transform(X)
+        
+        model = Ridge(alpha=0.1)  # Ridge para evitar overfitting
+        model.fit(X_poly, y)
+        
+        # Previsão
+        future_X = np.array(future_hours).reshape(-1, 1)
+        future_X_poly = poly_features.transform(future_X)
+        pred = model.predict(future_X_poly)
+        pred = np.maximum(pred, 0)
+        
+        # Métricas
+        if len(y) > 3:
+            train_pred = model.predict(X_poly)
+            mae = mean_absolute_error(y, train_pred)
+            mse = mean_squared_error(y, train_pred)
+            r2 = r2_score(y, train_pred)
+        else:
+            mae = mse = r2 = np.nan
+            
+        return pred, {'mae': mae, 'mse': mse, 'r2': r2}
     
-    for pm25, pm10 in zip(future_pm25, future_pm10):
-        aqi, category, color = calculate_aqi(pm25, pm10)
-        future_aqi.append(aqi)
-        future_categories.append(category)
-        future_colors.append(color)
+    # 3. MODELO ARIMA
+    def arima_forecast():
+        try:
+            y = df_work['aod'].values
+            
+            # Auto-ARIMA simplificado
+            model = ARIMA(y, order=(1, 1, 1))
+            fitted_model = model.fit()
+            
+            # Previsão
+            forecast = fitted_model.forecast(steps=len(future_times))
+            pred = np.maximum(forecast, 0)
+            
+            # Métricas
+            residuals = fitted_model.resid
+            mae = np.mean(np.abs(residuals))
+            mse = np.mean(residuals**2)
+            r2 = 1 - (np.var(residuals) / np.var(y))
+            
+            return pred, {'mae': mae, 'mse': mse, 'r2': r2}
+            
+        except Exception as e:
+            # Fallback para média móvel se ARIMA falhar
+            window = min(3, len(df_work))
+            mean_value = df_work['aod'].rolling(window=window).mean().iloc[-1]
+            pred = np.full(len(future_times), mean_value)
+            return pred, {'mae': np.nan, 'mse': np.nan, 'r2': np.nan}
     
-    # Criar DataFrame com previsão
-    df_pred = pd.DataFrame({
-        'time': future_times,
-        'aod': future_aod,
-        'pm25': future_pm25,
-        'pm10': future_pm10,
-        'aqi': future_aqi,
-        'aqi_category': future_categories,
-        'aqi_color': future_colors,
-        'type': 'forecast'
-    })
+    # 4. SUAVIZAÇÃO EXPONENCIAL
+    def exponential_smoothing():
+        try:
+            y = df_work['aod'].values
+            
+            # Modelo de Holt-Winters simples (sem sazonalidade)
+            model = ExponentialSmoothing(y, trend='add', seasonal=None)
+            fitted_model = model.fit()
+            
+            # Previsão
+            forecast = fitted_model.forecast(steps=len(future_times))
+            pred = np.maximum(forecast, 0)
+            
+            # Métricas
+            fitted_values = fitted_model.fittedvalues
+            residuals = y - fitted_values
+            mae = np.mean(np.abs(residuals))
+            mse = np.mean(residuals**2)
+            r2 = 1 - (np.var(residuals) / np.var(y))
+            
+            return pred, {'mae': mae, 'mse': mse, 'r2': r2}
+            
+        except Exception as e:
+            # Fallback
+            trend = np.polyfit(range(len(df_work)), df_work['aod'], 1)[0]
+            last_value = df_work['aod'].iloc[-1]
+            pred = [last_value + trend * i for i in range(1, len(future_times) + 1)]
+            pred = np.maximum(pred, 0)
+            return pred, {'mae': np.nan, 'mse': np.nan, 'r2': np.nan}
     
-    # Adicionar indicador aos dados históricos
-    df_hist['type'] = 'historical'
+    # 5. RANDOM FOREST
+    def random_forest():
+        if len(df_work) < 10:  # RF precisa de mais dados
+            return linear_regression()
+            
+        # Features: hora do dia, dia da semana, tendência temporal
+        features = []
+        for i, row in df_work.iterrows():
+            features.append([
+                row['time_numeric'],
+                row['time'].hour,
+                row['time'].weekday(),
+                i  # índice sequencial
+            ])
+        
+        X = np.array(features)
+        y = df_work['aod'].values
+        
+        model = RandomForestRegressor(n_estimators=50, random_state=42)
+        model.fit(X, y)
+        
+        # Previsão
+        future_features = []
+        for i, t in enumerate(future_times):
+            future_features.append([
+                future_hours[i],
+                t.hour,
+                t.weekday(),
+                len(df_work) + i
+            ])
+        
+        future_X = np.array(future_features)
+        pred = model.predict(future_X)
+        pred = np.maximum(pred, 0)
+        
+        # Métricas
+        train_pred = model.predict(X)
+        mae = mean_absolute_error(y, train_pred)
+        mse = mean_squared_error(y, train_pred)
+        r2 = r2_score(y, train_pred)
+        
+        return pred, {'mae': mae, 'mse': mse, 'r2': r2}
     
-    # Combinar histórico e previsão
-    result = pd.concat([df_hist[['time', 'aod', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']], df_pred], ignore_index=True)
-    return result
+    # Executar métodos conforme solicitado
+    if method == 'linear' or method == 'ensemble':
+        predictions['linear'], metrics['linear'] = linear_regression()
+    
+    if method == 'polynomial' or method == 'ensemble':
+        predictions['polynomial'], metrics['polynomial'] = polynomial_regression()
+    
+    if method == 'arima' or method == 'ensemble':
+        predictions['arima'], metrics['arima'] = arima_forecast()
+    
+    if method == 'exponential' or method == 'ensemble':
+        predictions['exponential'], metrics['exponential'] = exponential_smoothing()
+    
+    if method == 'random_forest' or method == 'ensemble':
+        predictions['random_forest'], metrics['random_forest'] = random_forest()
+    
+    # Se método específico foi escolhido, retornar apenas ele
+    if method != 'ensemble':
+        pred_values = predictions[method]
+        method_metrics = metrics[method]
+        
+        # Criar intervalos de confiança simples (± 20% da previsão)
+        confidence_range = pred_values * 0.2
+        
+        df_result = pd.DataFrame({
+            'time': future_times,
+            'aod': pred_values,
+            'type': 'forecast',
+            'method': method,
+            'confidence_lower': pred_values - confidence_range,
+            'confidence_upper': pred_values + confidence_range
+        })
+        
+        # Adicionar dados históricos
+        df_hist = df_work[['time', 'aod']].copy()
+        df_hist['type'] = 'historical'
+        df_hist['method'] = method
+        df_hist['confidence_lower'] = df_hist['aod']
+        df_hist['confidence_upper'] = df_hist['aod']
+        
+        return pd.concat([df_hist, df_result], ignore_index=True)
+    
+    # ENSEMBLE: Combinar previsões com pesos baseados na qualidade
+    else:
+        # Calcular pesos baseados no R²
+        weights = {}
+        total_r2 = 0
+        
+        for pred_method, metric in metrics.items():
+            r2_value = metric.get('r2', 0)
+            if np.isnan(r2_value) or r2_value < 0:
+                r2_value = 0.1  # peso mínimo
+            weights[pred_method] = max(r2_value, 0.1)
+            total_r2 += weights[pred_method]
+        
+        # Normalizar pesos
+        for pred_method in weights:
+            weights[pred_method] /= total_r2
+        
+        # Combinar previsões
+        ensemble_pred = np.zeros(len(future_times))
+        for pred_method, pred_values in predictions.items():
+            ensemble_pred += pred_values * weights[pred_method]
+        
+        # Calcular intervalo de confiança baseado na variabilidade entre métodos
+        all_preds = np.array(list(predictions.values()))
+        pred_std = np.std(all_preds, axis=0)
+        
+        df_result = pd.DataFrame({
+            'time': future_times,
+            'aod': ensemble_pred,
+            'type': 'forecast',
+            'method': 'ensemble',
+            'confidence_lower': ensemble_pred - 1.96 * pred_std,
+            'confidence_upper': ensemble_pred + 1.96 * pred_std
+        })
+        
+        # Adicionar dados históricos
+        df_hist = df_work[['time', 'aod']].copy()
+        df_hist['type'] = 'historical'
+        df_hist['method'] = 'ensemble'
+        df_hist['confidence_lower'] = df_hist['aod']
+        df_hist['confidence_upper'] = df_hist['aod']
+        
+        # Adicionar informações sobre os métodos individuais
+        individual_results = []
+        for pred_method, pred_values in predictions.items():
+            df_individual = pd.DataFrame({
+                'time': future_times,
+                'aod': pred_values,
+                'type': 'forecast_individual',
+                'method': pred_method,
+                'confidence_lower': pred_values,
+                'confidence_upper': pred_values
+            })
+            individual_results.append(df_individual)
+        
+        # Combinar todos os resultados
+        all_results = [df_hist, df_result] + individual_results
+        final_df = pd.concat(all_results, ignore_index=True)
+        
+        # Adicionar informações sobre a qualidade dos métodos
+        final_df.attrs['metrics'] = metrics
+        final_df.attrs['weights'] = weights
+        
+        return final_df
 
-# Função atualizada para analisar todas as cidades
+# Função para avaliar e comparar métodos
+def evaluate_prediction_methods(df, test_size=0.3):
+    """
+    Avalia diferentes métodos de previsão usando validação temporal.
+    """
+    if len(df) < 10:
+        return None
+    
+    # Dividir dados em treino e teste (temporal)
+    split_idx = int(len(df) * (1 - test_size))
+    train_df = df.iloc[:split_idx].copy()
+    test_df = df.iloc[split_idx:].copy()
+    
+    methods = ['linear', 'polynomial', 'arima', 'exponential', 'random_forest']
+    results = {}
+    
+    for method in methods:
+        try:
+            # Fazer previsão para o período de teste
+            forecast_df = predict_future_aod_advanced(
+                train_df, 
+                days=len(test_df)//4 + 1, 
+                method=method
+            )
+            
+            # Extrair apenas previsões
+            predictions = forecast_df[forecast_df['type'] == 'forecast']['aod'].values
+            
+            # Ajustar tamanhos se necessário
+            min_len = min(len(predictions), len(test_df))
+            if min_len > 0:
+                pred_subset = predictions[:min_len]
+                actual_subset = test_df['aod'].values[:min_len]
+                
+                # Calcular métricas
+                mae = mean_absolute_error(actual_subset, pred_subset)
+                mse = mean_squared_error(actual_subset, pred_subset)
+                rmse = np.sqrt(mse)
+                
+                results[method] = {
+                    'MAE': mae,
+                    'MSE': mse,
+                    'RMSE': rmse,
+                    'MAPE': np.mean(np.abs((actual_subset - pred_subset) / actual_subset)) * 100
+                }
+        except Exception as e:
+            results[method] = {
+                'MAE': np.inf,
+                'MSE': np.inf,
+                'RMSE': np.inf,
+                'MAPE': np.inf,
+                'Error': str(e)
+            }
+    
+    return results
+
+# NOVA FUNÇÃO: Analisar AOD para todas as cidades e gerar tabela de alertas
 def analyze_all_cities(ds, aod_var, cities_dict):
-    """Analisa os valores de AOD e PM para todas as cidades."""
+    """Analisa os valores de AOD para todas as cidades e retorna as 20 mais críticas."""
     cities_results = []
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, (city_name, coords) in enumerate(cities_dict.items()):
-        progress = (i + 1) / len(cities_dict)
-        progress_bar.progress(progress)
-        status_text.text(f"Analisando {city_name}... ({i+1}/{len(cities_dict)})")
-        
-        lat, lon = coords
-        
-        df_timeseries = extract_point_timeseries(ds, lat, lon, var_name=aod_var)
-        
-        if not df_timeseries.empty:
-            df_forecast = predict_future_values(df_timeseries, days=5)
+    # Para cada cidade, extrair série temporal e determinar valor máximo previsto
+    with st.spinner(f"Analisando AOD para todos os municípios de MS... (0/{len(cities_dict)})"):
+        for i, (city_name, coords) in enumerate(cities_dict.items()):
+            # Atualize o spinner a cada 10 cidades para não sobrecarregar a interface
+            if i % 10 == 0:
+                st.spinner(f"Analisando AOD para todos os municípios de MS... ({i}/{len(cities_dict)})")
             
-            forecast_only = df_forecast[df_forecast['type'] == 'forecast']
+            lat, lon = coords
             
-            if not forecast_only.empty:
-                max_aod = forecast_only['aod'].max()
-                max_pm25 = forecast_only['pm25'].max()
-                max_pm10 = forecast_only['pm10'].max()
-                max_aqi = forecast_only['aqi'].max()
+            # Extrair série temporal para a cidade
+            df_timeseries = extract_point_timeseries(ds, lat, lon, var_name=aod_var)
+            
+            if not df_timeseries.empty:
+                # Gerar previsão
+                df_forecast = predict_future_aod(df_timeseries, days=5)
                 
-                max_day_idx = forecast_only['aqi'].idxmax()
-                max_day = forecast_only.loc[max_day_idx, 'time']
-                max_category = forecast_only.loc[max_day_idx, 'aqi_category']
+                # Filtrar apenas dados de previsão
+                forecast_only = df_forecast[df_forecast['type'] == 'forecast']
                 
-                cities_results.append({
-                    'cidade': city_name,
-                    'aod_max': max_aod,
-                    'pm25_max': max_pm25,
-                    'pm10_max': max_pm10,
-                    'aqi_max': max_aqi,
-                    'data_max': max_day,
-                    'categoria': max_category
-                })
+                if not forecast_only.empty:
+                    # Obter valor máximo previsto e quando ocorrerá
+                    max_aod = forecast_only['aod'].max()
+                    max_day = forecast_only.loc[forecast_only['aod'].idxmax(), 'time']
+                    
+                    # Categorizar nível de poluição
+                    pollution_level = "Baixo"
+                    if max_aod >= 0.5:
+                        pollution_level = "Muito Alto"
+                    elif max_aod >= 0.2:
+                        pollution_level = "Alto"
+                    elif max_aod >= 0.1:
+                        pollution_level = "Moderado"
+                    
+                    # Adicionar resultado à lista
+                    cities_results.append({
+                        'cidade': city_name,
+                        'aod_max': max_aod,
+                        'data_max': max_day,
+                        'nivel': pollution_level
+                    })
     
-    progress_bar.empty()
-    status_text.empty()
-    
+    # Criar DataFrame com os resultados
     if cities_results:
         df_results = pd.DataFrame(cities_results)
-        df_results = df_results.sort_values('aqi_max', ascending=False).reset_index(drop=True)
         
+        # Ordenar por AOD máximo (decrescente)
+        df_results = df_results.sort_values('aod_max', ascending=False).reset_index(drop=True)
+        
+        # Formatar o DataFrame para exibição
         df_results['aod_max'] = df_results['aod_max'].round(3)
-        df_results['pm25_max'] = df_results['pm25_max'].round(1)
-        df_results['pm10_max'] = df_results['pm10_max'].round(1)
-        df_results['aqi_max'] = df_results['aqi_max'].round(0)
         df_results['data_max'] = df_results['data_max'].dt.strftime('%d/%m/%Y %H:%M')
         
         return df_results
     else:
-        return pd.DataFrame(columns=['cidade', 'aod_max', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
+        return pd.DataFrame(columns=['cidade', 'aod_max', 'data_max', 'nivel'])
 
-# Função principal atualizada - SEM TÍTULO DA CIDADE NO MAPA
+# Função principal para gerar análise de AOD
 def generate_aod_analysis():
     dataset = "cams-global-atmospheric-composition-forecasts"
     
+    # Format dates and times correctly for ADS API
     start_date_str = start_date.strftime('%Y-%m-%d')
     end_date_str = end_date.strftime('%Y-%m-%d')
     
+    # Create list of hours in the correct format
     hours = []
     current_hour = start_hour
     while True:
@@ -534,30 +631,23 @@ def generate_aod_analysis():
         if current_hour == end_hour:
             break
         current_hour = (current_hour + 3) % 24
-        if current_hour == start_hour:
+        if current_hour == start_hour:  # Evitar loop infinito
             break
     
+    # Se não tivermos horas definidas, usar padrão
     if not hours:
         hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
     
-    # Centralizar a área de requisição no município selecionado
-    buffer = 1.5  # Graus de buffer ao redor do município
-    city_bounds = {
-        'north': lat_center + buffer,
-        'south': lat_center - buffer,
-        'east': lon_center + buffer,
-        'west': lon_center - buffer
-    }
-    
+    # Preparar request para API
     request = {
         'variable': ['total_aerosol_optical_depth_550nm'],
         'date': f'{start_date_str}/{end_date_str}',
         'time': hours,
-        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
+        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],  # Incluir previsões de até 5 dias
         'type': ['forecast'],
         'format': 'netcdf',
-        'area': [city_bounds['north'], city_bounds['west'], 
-                city_bounds['south'], city_bounds['east']]  # Norte, Oeste, Sul, Leste
+        'area': [lat_center + map_width/2, lon_center - map_width/2, 
+                lat_center - map_width/2, lon_center + map_width/2]
     }
     
     filename = f'AOD550_{city}_{start_date}_to_{end_date}.nc'
@@ -568,30 +658,47 @@ def generate_aod_analysis():
         
         ds = xr.open_dataset(filename)
         
+        # Verificar variáveis disponíveis
         variable_names = list(ds.data_vars)
+        st.write(f"Variáveis disponíveis: {variable_names}")
+        
+        # Usar a variável 'aod550' encontrada nos dados
         aod_var = next((var for var in variable_names if 'aod' in var.lower()), variable_names[0])
         
+        st.write(f"Usando variável: {aod_var}")
         da = ds[aod_var]
         
+        # Verificar dimensões
+        st.write(f"Dimensões: {da.dims}")
+        
+        # Identificar dimensões temporais
         time_dims = [dim for dim in da.dims if 'time' in dim or 'forecast' in dim]
         
         if not time_dims:
             st.error("Não foi possível identificar dimensão temporal nos dados.")
             return None
         
-        # Extrair série temporal para o município selecionado
-        with st.spinner("Extraindo dados para o município..."):
+        # Extrair série temporal para o ponto central (cidade selecionada)
+        with st.spinner("Extraindo série temporal para o município..."):
             df_timeseries = extract_point_timeseries(ds, lat_center, lon_center, var_name=aod_var)
         
         if df_timeseries.empty:
             st.error("Não foi possível extrair série temporal para este local.")
             return None
         
-        # Gerar previsão
-        with st.spinner("Gerando previsões..."):
-            df_forecast = predict_future_values(df_timeseries, days=5)
+        # Gerar previsão para os próximos dias
+        with st.spinner("Gerando previsão de AOD..."):
+            df_forecast = predict_future_aod(df_timeseries, days=5)  # Aumentado para 5 dias
         
-        # Criar animação centralizada no município COM SHAPE - SEM TÍTULO DA CIDADE
+        # Encontrar o município no geodataframe
+        municipality_shape = None
+        if not ms_shapes.empty:
+            city_shape = ms_shapes[ms_shapes['NM_MUN'] == city]
+            if not city_shape.empty:
+                municipality_shape = city_shape.iloc[0].geometry
+        
+        # --- Criação da animação ---
+        # Identificar frames disponíveis
         if 'forecast_reference_time' in da.dims:
             time_dim = 'forecast_reference_time'
             frames = len(da[time_dim])
@@ -599,64 +706,40 @@ def generate_aod_analysis():
             time_dim = time_dims[0]
             frames = len(da[time_dim])
         
+        st.write(f"✅ Total de frames disponíveis: {frames}")
+        
         if frames < 1:
             st.error("Erro: Dados insuficientes para animação.")
             return None
         
+        # Determinar range de cores
         vmin, vmax = float(da.min().values), float(da.max().values)
         vmin = max(0, vmin - 0.05)
-        vmax = min(2, vmax + 0.05)
+        vmax = min(2, vmax + 0.05)  # AOD geralmente não ultrapassa 2
         
-        # Criar figura com projeção centralizada no município
-        fig = plt.figure(figsize=(14, 10))
+        # Criar figura
+        fig = plt.figure(figsize=(12, 8))
         ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
         
-        # Adicionar features
-        ax.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.7)
-        ax.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.7)
-        ax.coastlines(resolution='50m', color='black', linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle=':', color='gray')
-        ax.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='black', linewidth=1)
+        # Adicionar features básicas
+        ax.coastlines(resolution='10m')
+        ax.add_feature(cfeature.BORDERS.with_scale('10m'), linestyle=':')
+        ax.add_feature(cfeature.STATES.with_scale('10m'), linestyle=':')
         
-        # Grid
-        gl = ax.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+        # Adicionar grid
+        gl = ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.5, linestyle='--')
         gl.top_labels = False
         gl.right_labels = False
         
-        # Definir extensão do mapa para cobrir área ao redor do município
-        ax.set_extent([city_bounds['west'], city_bounds['east'], 
-                      city_bounds['south'], city_bounds['north']], 
-                     crs=ccrs.PlateCarree())
+        # Definir extensão do mapa
+        ax.set_extent([lon_center - map_width/2, lon_center + map_width/2, 
+                    lat_center - map_width/2, lat_center + map_width/2], 
+                   crs=ccrs.PlateCarree())
         
-        # ✨ ADICIONAR SHAPE DO MUNICÍPIO (SEM TÍTULO ACIMA)
-        shape_added = add_municipality_shape(ax, city, ms_shapes)
+        # Obter primeiro frame para inicializar
+        first_frame_data = None
+        first_frame_time = None
         
-        # Marcar o centro do município selecionado no mapa
-        ax.plot(lon_center, lat_center, 'o', markersize=12, transform=ccrs.PlateCarree(), 
-                color='red', markeredgecolor='white', markeredgewidth=2,
-                label=f'Centro de {city}')
-        
-        # Adicionar outros municípios próximos (opcional)
-        nearby_cities = []
-        for city_name, coords in cities.items():
-            city_lat, city_lon = coords
-            # Verificar se está na área visível
-            if (city_bounds['south'] <= city_lat <= city_bounds['north'] and 
-                city_bounds['west'] <= city_lon <= city_bounds['east'] and 
-                city_name != city):
-                nearby_cities.append((city_name, city_lat, city_lon))
-        
-        # Mostrar até 6 cidades próximas (reduzido para não poluir o mapa)
-        for city_name, city_lat, city_lon in nearby_cities[:6]:
-            ax.plot(city_lon, city_lat, 'o', markersize=6, transform=ccrs.PlateCarree(), 
-                   color='blue', markeredgecolor='white', markeredgewidth=1)
-            # Opcional: adicionar nome da cidade pequeno (pode ser removido se desejar)
-            ax.text(city_lon + 0.02, city_lat + 0.02, city_name, fontsize=8, 
-                   transform=ccrs.PlateCarree(), 
-                   bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', 
-                            alpha=0.7, edgecolor='blue', linewidth=1))
-        
-        # Obter primeiro frame
         if 'forecast_period' in da.dims and 'forecast_reference_time' in da.dims:
             if len(da.forecast_period) > 0 and len(da.forecast_reference_time) > 0:
                 first_frame_data = da.isel(forecast_period=0, forecast_reference_time=0).values
@@ -676,59 +759,63 @@ def generate_aod_analysis():
         
         # Criar mapa de cores
         im = ax.pcolormesh(ds.longitude, ds.latitude, first_frame_data, 
-                         cmap=colormap, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), alpha=0.8)
+                         cmap=colormap, vmin=vmin, vmax=vmax)
         
         # Adicionar barra de cores
-        cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal')
-        cbar.set_label('AOD 550nm', fontsize=12)
-        cbar.ax.tick_params(labelsize=10)
+        cbar = plt.colorbar(im, fraction=0.046, pad=0.04)
+        cbar.set_label('AOD 550nm')
         
-        # Título APENAS com data/hora - SEM NOME DA CIDADE
-        title = ax.set_title(f'AOD 550nm\n{first_frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
-                           fontsize=14, pad=15)
+        # Adicionar título inicial
+        title = ax.set_title(f'AOD 550nm em {city} - {first_frame_time}', fontsize=14)
         
-        # Adicionar legenda com shape do município destacado
-        if shape_added:
-            legend_elements = [
-                plt.Line2D([0], [0], color='red', linewidth=3, alpha=0.9,
-                          label=f'Limite de {city}'),
-                plt.Line2D([0], [0], marker='o', color='red', markersize=8, 
-                          markeredgecolor='white', markeredgewidth=2, linestyle='None', 
-                          label=f'Centro de {city}'),
-                plt.Line2D([0], [0], marker='o', color='blue', markersize=5, 
-                          markeredgecolor='white', linestyle='None', 
-                          label='Outros municípios')
-            ]
-            ax.legend(handles=legend_elements, loc='upper left', framealpha=0.9, fontsize=10)
+        # Adicionar shape do município selecionado se disponível
+        if municipality_shape:
+            try:
+                if hasattr(municipality_shape, '__geo_interface__'):
+                    ax.add_geometries([municipality_shape], crs=ccrs.PlateCarree(), 
+                                    facecolor='none', edgecolor='red', linewidth=2, zorder=3)
+                    
+                # Adicionar rótulo do município
+                ax.text(lon_center, lat_center, city, fontsize=12, fontweight='bold', 
+                       ha='center', va='center', color='red',
+                       bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'),
+                       transform=ccrs.PlateCarree(), zorder=4)
+            except Exception as e:
+                st.warning(f"Não foi possível desenhar o shape do município: {str(e)}")
         
         # Função de animação
         def animate(i):
             try:
+                # Selecionar frame de acordo com a estrutura dos dados
                 frame_data = None
                 frame_time = None
                 
                 if 'forecast_period' in da.dims and 'forecast_reference_time' in da.dims:
+                    # Determinar índices válidos
                     fp_idx = min(0, len(da.forecast_period)-1)
                     frt_idx = min(i, len(da.forecast_reference_time)-1)
                     
                     frame_data = da.isel(forecast_period=fp_idx, forecast_reference_time=frt_idx).values
                     frame_time = pd.to_datetime(ds.forecast_reference_time.values[frt_idx])
                 else:
+                    # Selecionar pelo índice na dimensão de tempo
                     t_idx = min(i, len(da[time_dim])-1)
                     frame_data = da.isel({time_dim: t_idx}).values
                     frame_time = pd.to_datetime(da[time_dim].values[t_idx])
                 
+                # Atualizar dados
                 im.set_array(frame_data.ravel())
-                # Título APENAS com data/hora - SEM NOME DA CIDADE
-                title.set_text(f'AOD 550nm\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
+                
+                # Atualizar título com timestamp
+                title.set_text(f'AOD 550nm em {city} - {frame_time}')
                 
                 return [im, title]
             except Exception as e:
                 st.error(f"Erro no frame {i}: {str(e)}")
                 return [im, title]
         
-        # Limitar número de frames
-        actual_frames = min(frames, 20)
+        # Limitar número de frames para evitar problemas
+        actual_frames = min(frames, 20)  # Máximo de 20 frames
         
         # Criar animação
         ani = animation.FuncAnimation(fig, animate, frames=actual_frames, 
@@ -742,41 +829,10 @@ def generate_aod_analysis():
         
         plt.close(fig)
 
-        # Analisar todas as cidades (usando dados de MS completo se disponível)
+        # NOVO: Analisar dados para todas as cidades do MS
         top_pollution_cities = None
-        try:
-            # Para análise de todas as cidades, usar coordenadas completas de MS
-            ms_bounds = {
-                'north': -17.5,
-                'south': -24.0,
-                'east': -50.5,
-                'west': -58.5
-            }
-            
-            # Requisitar dados de MS completo para análise das cidades
-            request_ms = {
-                'variable': ['total_aerosol_optical_depth_550nm'],
-                'date': f'{start_date_str}/{end_date_str}',
-                'time': hours,
-                'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
-                'type': ['forecast'],
-                'format': 'netcdf',
-                'area': [ms_bounds['north'], ms_bounds['west'], 
-                        ms_bounds['south'], ms_bounds['east']]
-            }
-            
-            filename_ms = f'AOD550_MS_complete_{start_date}_to_{end_date}.nc'
-            
-            with st.spinner("🔍 Baixando dados de MS completo para análise das cidades..."):
-                client.retrieve(dataset, request_ms).download(filename_ms)
-            
-            ds_ms = xr.open_dataset(filename_ms)
-            with st.spinner("🔍 Analisando qualidade do ar em todos os municípios de MS..."):
-                top_pollution_cities = analyze_all_cities(ds_ms, aod_var, cities)
-        except Exception as e:
-            st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
-            # Usar apenas os dados locais se não conseguir baixar dados completos
-            top_pollution_cities = pd.DataFrame(columns=['cidade', 'aod_max', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
+        with st.spinner("🔍 Analisando todas as cidades do MS para alerta de poluição..."):
+            top_pollution_cities = analyze_all_cities(ds, aod_var, cities)
         
         return {
             'animation': gif_filename,
@@ -784,8 +840,7 @@ def generate_aod_analysis():
             'forecast': df_forecast,
             'dataset': ds,
             'variable': aod_var,
-            'top_pollution': top_pollution_cities,
-            'shape_loaded': shape_added
+            'top_pollution': top_pollution_cities  # Novo item no dicionário de resultados
         }
     
     except Exception as e:
@@ -794,92 +849,65 @@ def generate_aod_analysis():
         st.write(request)
         return None
 
-# Carregar shapefiles dos municípios
-with st.spinner("🗺️ Carregando shapes dos municípios de MS..."):
+# Carregar shapefiles dos municípios do MS
+with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
-    if not ms_shapes.empty:
-        st.success(f"✅ {len(ms_shapes)} municípios carregados com sucesso!")
-    else:
-        st.warning("⚠️ Shapes dos municípios não disponíveis - usando pontos centrais")
 
 # Sidebar para configurações
 st.sidebar.header("⚙️ Configurações")
 
-# Seleção de cidade
+# Seleção de cidade com os shapes disponíveis
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
 if not available_cities:
-    available_cities = list(cities.keys())
+    available_cities = list(cities.keys())  # Fallback para a lista original
 
-city = st.sidebar.selectbox("🏙️ Selecione o município para análise detalhada", 
-                           sorted(available_cities), 
-                           help="O shape do município será destacado no mapa")
+city = st.sidebar.selectbox("Selecione o município", available_cities)
 lat_center, lon_center = cities[city]
 
-# Mostrar informações do município selecionado
-st.sidebar.info(f"""
-**Município Selecionado:** {city}
-**Coordenadas:** {lat_center:.4f}°S, {abs(lon_center):.4f}°W
-**Shape disponível:** {'✅ Sim' if city.upper() in ms_shapes['NM_MUN'].str.upper().values else '❌ Não'}
-""")
-
 # Configurações de data e hora
-st.sidebar.subheader("📅 Período de Análise")
+st.sidebar.subheader("Período de Análise")
 start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
-end_date = st.sidebar.date_input("Data Final", datetime.today() + timedelta(days=5))
+end_date = st.sidebar.date_input("Data Final", datetime.today() + timedelta(days=5))  # Estendido para 5 dias
 
 all_hours = list(range(0, 24, 3))
 start_hour = st.sidebar.selectbox("Horário Inicial", all_hours, format_func=lambda x: f"{x:02d}:00")
 end_hour = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours)-1, format_func=lambda x: f"{x:02d}:00")
 
 # Opções avançadas
-st.sidebar.subheader("🎨 Opções Avançadas")
+st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
+    map_width = st.slider("Largura do Mapa (graus)", 5, 20, 10)
     animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
     colormap = st.selectbox("Paleta de Cores", 
-                          ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis", "RdYlBu_r"])
-    show_pm_estimates = st.checkbox("Mostrar estimativas de PM2.5/PM10", value=True)
-    show_fire_adjustments = st.checkbox("Aplicar ajustes para queimadas", value=True)
-    show_nearby_cities = st.checkbox("Mostrar municípios próximos", value=True)
+                          ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis"])
+st.sidebar.subheader("Método de Previsão")
+prediction_method = st.sidebar.selectbox(
+    "Selecione o método de previsão",
+    ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
+    index=0  # ensemble como padrão)
 
-# Informações sobre o período
-current_month = datetime.now().month
-if 5 <= current_month <= 9:
-    st.sidebar.warning("🔥 **Período de Queimadas Ativo**\nAs estimativas de PM são ajustadas para refletir as condições típicas de queimadas na região.")
+# No processamento:
+df_forecast = predict_future_aod_advanced(df_timeseries, days=5, method=prediction_method)
 
-# Botão principal
-st.markdown("### 🚀 Iniciar Análise Completa")
-st.markdown(f"""
-Clique no botão abaixo para gerar análise de AOD e PM centralizada em **{city}**.
+# Agora, vamos adicionar o botão logo após o texto introdutório
+st.markdown("### 🚀 Iniciar Análise de AOD")
+st.markdown("Clique no botão abaixo para gerar análise completa de AOD para todos os municípios de MS.")
 
-🗺️ **Mapa Limpo:** O contorno do município será destacado sem título sobreposto!
-""")
-
-if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_container_width=True):
+# Botão para iniciar análise
+if st.button("🎞️ Gerar Análise Completa", type="primary", use_container_width=True):
     try:
+        # Executar análise e obter resultados
         results = generate_aod_analysis()
         
         if results:
-            # Criar abas
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "📊 Análise do Município", 
-                "⚠️ Alerta de Qualidade do Ar", 
-                f"🗺️ Mapa de {city}",
-                "📈 Análise PM2.5/PM10"
-            ])
+            # Layout com abas para diferentes visualizações
+            tab1, tab2, tab3 = st.tabs(["📊 Análise do Município", "⚠️ Alerta de Poluição para MS", "🗺️ Mapa e Animação"])
             
-            # Aba do Mapa
             with tab3:
-                st.subheader(f"🎬 Animação AOD 550nm - {city}")
+                st.subheader("🎬 Animação de AOD 550nm")
+                st.image(results['animation'], caption=f"AOD 550nm em {city} ({start_date} a {end_date})")
                 
-                # Mostrar status do shape
-                if results.get('shape_loaded', False):
-                    st.success(f"✅ **Shape do município {city} carregado com sucesso!**")
-                    st.info("🔴 **Contorno vermelho** = Limite municipal | 🔴 **Ponto vermelho** = Centro da cidade")
-                else:
-                    st.warning(f"⚠️ Shape do município {city} não disponível - usando apenas coordenadas centrais")
-                
-                st.image(results['animation'], caption=f"Evolução temporal do AOD em {city} ({start_date} a {end_date})")
-                
+                # Adicionar opções para baixar
                 with open(results['animation'], "rb") as file:
                     btn = st.download_button(
                         label="⬇️ Baixar Animação (GIF)",
@@ -887,419 +915,271 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                         file_name=f"AOD_{city}_{start_date}_to_{end_date}.gif",
                         mime="image/gif"
                     )
-                
-                # Informações sobre o mapa
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.info(f"""
-                    **Como interpretar o mapa:**
-                    - 🟢 Verde/Azul: AOD < 0.1 (Ar limpo)
-                    - 🟡 Amarelo: AOD 0.1-0.2 (Qualidade moderada)
-                    - 🟠 Laranja: AOD 0.2-0.5 (Poluição elevada)
-                    - 🔴 Vermelho: AOD > 0.5 (Condições severas)
-                    """)
-                
-                with col2:
-                    st.info(f"""
-                    **Elementos do mapa:**
-                    - 🔴 **Contorno vermelho:** Limite de {city}
-                    - 🔴 **Ponto grande:** Centro de {city}
-                    - 🔵 **Pontos azuis:** Outros municípios
-                    - 📅 **Título:** Apenas data/hora (mapa limpo)
-                    """)
-                
-                # Informações técnicas sobre shapes
-                with st.expander("ℹ️ Informações sobre os Shapes Municipais"):
-                    st.markdown(f"""
-                    ### Dados Geoespaciais - {city}
-                    
-                    **Fonte dos Shapes:** IBGE - Malha Municipal 2022
-                    **Sistema de Coordenadas:** EPSG:4326 (WGS84)
-                    **Precisão:** Baseada na malha oficial dos municípios brasileiros
-                    
-                    **Processamento:**
-                    - Shape carregado diretamente do servidor IBGE
-                    - Contorno renderizado em tempo real no mapa
-                    - Preenchimento semi-transparente (15% alpha) para destacar a área
-                    - Coordenadas centrais calculadas automaticamente
-                    - Mapa limpo sem título da cidade sobreposto
-                    
-                    **Municípios disponíveis:** {len(ms_shapes)} de 79 municípios de MS
-                    
-                    {"✅ Shape encontrado e renderizado com sucesso!" if results.get('shape_loaded', False) else "❌ Shape não encontrado - usando coordenadas pontuais"}
-                    """)
-
-            # Continuar com as outras abas (análise, alertas, PM) - mantendo o código das outras abas
-            # Aba de Análise PM2.5/PM10
-            with tab4:
-                st.subheader("📈 Análise Detalhada de Material Particulado")
-                
-                df_combined = results['forecast']
-                
-                # Análise estatística
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("📊 Estatísticas PM2.5")
-                    
-                    pm25_stats = df_combined['pm25'].describe()
-                    
-                    col_a, col_b = st.columns(2)
-                    col_a.metric("Média", f"{pm25_stats['mean']:.1f} μg/m³")
-                    col_b.metric("Máximo", f"{pm25_stats['max']:.1f} μg/m³")
-                    
-                    col_c, col_d = st.columns(2)
-                    col_c.metric("Mínimo", f"{pm25_stats['min']:.1f} μg/m³")
-                    col_d.metric("Desvio", f"{pm25_stats['std']:.1f} μg/m³")
-                    
-                    # Percentual acima do limite OMS
-                    above_who_pm25 = (df_combined['pm25'] > 25).sum()
-                    total_points = len(df_combined)
-                    pct_above_pm25 = (above_who_pm25 / total_points) * 100
-                    
-                    if pct_above_pm25 > 50:
-                        st.error(f"🚨 {pct_above_pm25:.1f}% dos pontos acima do limite OMS (25 μg/m³)")
-                    elif pct_above_pm25 > 20:
-                        st.warning(f"⚠️ {pct_above_pm25:.1f}% dos pontos acima do limite OMS (25 μg/m³)")
-                    else:
-                        st.success(f"✅ {pct_above_pm25:.1f}% dos pontos acima do limite OMS (25 μg/m³)")
-                
-                with col2:
-                    st.subheader("📊 Estatísticas PM10")
-                    
-                    pm10_stats = df_combined['pm10'].describe()
-                    
-                    col_a, col_b = st.columns(2)
-                    col_a.metric("Média", f"{pm10_stats['mean']:.1f} μg/m³")
-                    col_b.metric("Máximo", f"{pm10_stats['max']:.1f} μg/m³")
-                    
-                    col_c, col_d = st.columns(2)
-                    col_c.metric("Mínimo", f"{pm10_stats['min']:.1f} μg/m³")
-                    col_d.metric("Desvio", f"{pm10_stats['std']:.1f} μg/m³")
-                    
-                    # Percentual acima do limite OMS
-                    above_who_pm10 = (df_combined['pm10'] > 50).sum()
-                    pct_above_pm10 = (above_who_pm10 / total_points) * 100
-                    
-                    if pct_above_pm10 > 50:
-                        st.error(f"🚨 {pct_above_pm10:.1f}% dos pontos acima do limite OMS (50 μg/m³)")
-                    elif pct_above_pm10 > 20:
-                        st.warning(f"⚠️ {pct_above_pm10:.1f}% dos pontos acima do limite OMS (50 μg/m³)")
-                    else:
-                        st.success(f"✅ {pct_above_pm10:.1f}% dos pontos acima do limite OMS (50 μg/m³)")
-                
-                # Gráficos de distribuição
-                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-                
-                # Histograma PM2.5
-                ax1.hist(df_combined['pm25'], bins=20, alpha=0.7, color='green', edgecolor='black')
-                ax1.axvline(x=25, color='red', linestyle='--', linewidth=2, label='Limite OMS (25 μg/m³)')
-                ax1.set_xlabel('PM2.5 (μg/m³)')
-                ax1.set_ylabel('Frequência')
-                ax1.set_title('Distribuição de PM2.5')
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                
-                # Histograma PM10
-                ax2.hist(df_combined['pm10'], bins=20, alpha=0.7, color='brown', edgecolor='black')
-                ax2.axvline(x=50, color='red', linestyle='--', linewidth=2, label='Limite OMS (50 μg/m³)')
-                ax2.set_xlabel('PM10 (μg/m³)')
-                ax2.set_ylabel('Frequência')
-                ax2.set_title('Distribuição de PM10')
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-                
-                # Série temporal comparativa
-                ax3.plot(df_combined['time'], df_combined['pm25'], 
-                        'o-', color='green', label='PM2.5', markersize=4, alpha=0.8)
-                ax3.plot(df_combined['time'], df_combined['pm10'], 
-                        'o-', color='brown', label='PM10', markersize=4, alpha=0.8)
-                ax3.axhline(y=25, color='green', linestyle='--', alpha=0.7, label='Limite OMS PM2.5')
-                ax3.axhline(y=50, color='brown', linestyle='--', alpha=0.7, label='Limite OMS PM10')
-                ax3.set_xlabel('Data/Hora')
-                ax3.set_ylabel('Concentração (μg/m³)')
-                ax3.set_title('Evolução Temporal de PM2.5 e PM10')
-                ax3.legend()
-                ax3.grid(True, alpha=0.3)
-                ax3.tick_params(axis='x', rotation=45)
-                
-                # Correlação AOD vs PM
-                ax4.scatter(df_combined['aod'], df_combined['pm25'], 
-                           alpha=0.6, color='green', label='PM2.5', s=30)
-                ax4.scatter(df_combined['aod'], df_combined['pm10'], 
-                           alpha=0.6, color='brown', label='PM10', s=30)
-                ax4.set_xlabel('AOD 550nm')
-                ax4.set_ylabel('PM (μg/m³)')
-                ax4.set_title('Correlação AOD vs Material Particulado')
-                ax4.legend()
-                ax4.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                
-                # Análise de correlação
-                st.subheader("🔬 Análise de Correlação")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Correlação AOD-PM2.5
-                    corr_aod_pm25 = df_combined['aod'].corr(df_combined['pm25'])
-                    st.metric("Correlação AOD-PM2.5", f"{corr_aod_pm25:.3f}")
-                    
-                    if corr_aod_pm25 > 0.8:
-                        st.success("✅ Correlação muito forte")
-                    elif corr_aod_pm25 > 0.6:
-                        st.info("ℹ️ Correlação forte")
-                    elif corr_aod_pm25 > 0.4:
-                        st.warning("⚠️ Correlação moderada")
-                    else:
-                        st.error("❌ Correlação fraca")
-                
-                with col2:
-                    # Correlação AOD-PM10
-                    corr_aod_pm10 = df_combined['aod'].corr(df_combined['pm10'])
-                    st.metric("Correlação AOD-PM10", f"{corr_aod_pm10:.3f}")
-                    
-                    if corr_aod_pm10 > 0.8:
-                        st.success("✅ Correlação muito forte")
-                    elif corr_aod_pm10 > 0.6:
-                        st.info("ℹ️ Correlação forte")
-                    elif corr_aod_pm10 > 0.4:
-                        st.warning("⚠️ Correlação moderada")
-                    else:
-                        st.error("❌ Correlação fraca")
-                
-                # Informações sobre metodologia
-                with st.expander("ℹ️ Metodologia de Estimativa de PM"):
-                    st.markdown("""
-                    ### Metodologia de Conversão AOD → PM
-                    
-                    **Fórmulas Utilizadas:**
-                    - **Estação Seca (Maio-Set):** PM2.5 = AOD × 110 × f(queimadas) × f(umidade) + 8
-                    - **Estação Normal:** PM2.5 = AOD × 85 × f(queimadas) × f(umidade) + 8
-                    - **PM10:** Aproximadamente 1.5× PM2.5 para aerossóis de queimada
-                    
-                    **Fatores de Correção:**
-                    - **Queimadas:** Multiplicador de 1.5-2.0× quando AOD > 0.3 na estação seca
-                    - **Umidade:** Fator higroscópico f(RH) = (1-RH/100)^(-0.7)
-                    - **Background:** +8 μg/m³ para PM2.5, +15 μg/m³ para PM10
-                    
-                    **Limitações:**
-                    - Estimativas baseadas em literatura científica para América do Sul
-                    - Incertezas podem ser significativas durante eventos extremos
-                    - Recomenda-se validação com medições diretas quando disponíveis
-                    
-                    **Referências:**
-                    - van Donkelaar et al. (2010) - Conversões AOD-PM para América do Sul
-                    - Reddington et al. (2019) - Aerossóis de queimada na Amazônia
-                    - OMS - Diretrizes de qualidade do ar (2021)
-                    """)
             
-    except Exception as e:
-        st.error(f"❌ Erro durante a análise: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
-
-# Rodapé informativo
-st.markdown("---")
-st.markdown("""
-### ℹ️ Informações Importantes
-
-**🗺️ Novidade - Mapa Limpo:**
-- Shape do município destacado com contorno vermelho
-- Título do mapa contém apenas data/hora (sem nome da cidade sobreposto)
-- Visualização mais limpa e profissional
-- Legenda clara identificando os elementos
-
-**Sobre as Estimativas:**
-- As concentrações de PM2.5/PM10 são estimadas a partir do AOD usando modelos empíricos validados para a América do Sul
-- Os valores podem apresentar incertezas, especialmente durante eventos extremos
-- Para decisões críticas, recomenda-se validação com medições diretas
-
-**Dados Fornecidos por:**
-- CAMS (Copernicus Atmosphere Monitoring Service) - União Europeia
-- IBGE - Malha Municipal (Shapes dos municípios)
-- Processamento: Sistema desenvolvido para monitoramento ambiental de MS
-
-**Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
-""") Análise do Município
             with tab1:
-                st.subheader(f"📊 Análise Detalhada - {city}")
+                st.subheader("📊 Série Temporal e Previsão")
                 
+                # Layout de duas colunas
                 col1, col2 = st.columns([3, 2])
                 
                 with col1:
+                    # Preparar dados para gráfico
                     df_combined = results['forecast']
                     
-                    # Criar subplots para AOD, PM2.5 e PM10
-                    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+                    # Criar gráfico
+                    fig, ax = plt.subplots(figsize=(10, 6))
                     
-                    # Gráfico AOD
+                    # Dados históricos
                     hist_data = df_combined[df_combined['type'] == 'historical']
+                    ax.plot(hist_data['time'], hist_data['aod'], 
+                           marker='o', linestyle='-', color='blue', label='Observado')
+                    
+                    # Dados de previsão
                     forecast_data = df_combined[df_combined['type'] == 'forecast']
+                    ax.plot(forecast_data['time'], forecast_data['aod'], 
+                           marker='x', linestyle='--', color='red', label='Previsão')
                     
-                    ax1.plot(hist_data['time'], hist_data['aod'], 
-                           'o-', color='blue', label='Observado', markersize=6)
-                    ax1.plot(forecast_data['time'], forecast_data['aod'], 
-                           'x--', color='red', label='Previsão', markersize=6)
-                    ax1.set_ylabel('AOD 550nm', fontsize=12)
-                    ax1.legend()
-                    ax1.grid(True, alpha=0.3)
-                    ax1.set_title('Profundidade Óptica de Aerossóis', fontsize=14)
+                    # Formatar eixos
+                    ax.set_title(f'AOD 550nm em {city}: Valores Observados e Previstos', fontsize=14)
+                    ax.set_xlabel('Data/Hora', fontsize=12)
+                    ax.set_ylabel('AOD 550nm', fontsize=12)
                     
-                    # Gráfico PM2.5
-                    ax2.plot(hist_data['time'], hist_data['pm25'], 
-                           'o-', color='green', label='PM2.5 Estimado', markersize=6)
-                    ax2.plot(forecast_data['time'], forecast_data['pm25'], 
-                           'x--', color='darkgreen', label='PM2.5 Previsto', markersize=6)
-                    ax2.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS')
-                    ax2.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
-                    ax2.legend()
-                    ax2.grid(True, alpha=0.3)
-                    ax2.set_title('Material Particulado PM2.5', fontsize=14)
-                    
-                    # Gráfico PM10
-                    ax3.plot(hist_data['time'], hist_data['pm10'], 
-                           'o-', color='brown', label='PM10 Estimado', markersize=6)
-                    ax3.plot(forecast_data['time'], forecast_data['pm10'], 
-                           'x--', color='sienna', label='PM10 Previsto', markersize=6)
-                    ax3.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS')
-                    ax3.set_ylabel('PM10 (μg/m³)', fontsize=12)
-                    ax3.set_xlabel('Data/Hora', fontsize=12)
-                    ax3.legend()
-                    ax3.grid(True, alpha=0.3)
-                    ax3.set_title('Material Particulado PM10', fontsize=14)
-                    
-                    # Formatar datas
-                    ax3.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+                    # Formatar datas no eixo x
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
                     plt.xticks(rotation=45)
+                    
+                    # Adicionar legenda e grade
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Adicionar faixa de qualidade do ar
+                    ax.axhspan(0, 0.1, alpha=0.2, color='green', label='Boa')
+                    ax.axhspan(0.1, 0.2, alpha=0.2, color='yellow', label='Moderada')
+                    ax.axhspan(0.2, 0.5, alpha=0.2, color='orange', label='Insalubre')
+                    ax.axhspan(0.5, 2.0, alpha=0.2, color='red', label='Perigosa')
                     
                     plt.tight_layout()
                     st.pyplot(fig)
                 
                 with col2:
-                    st.subheader("📈 Estatísticas Atuais")
+                    # Estatísticas
+                    st.subheader("📈 Estatísticas de AOD")
                     
+                    # Calcular estatísticas
                     if not hist_data.empty:
                         curr_aod = hist_data['aod'].iloc[-1]
-                        curr_pm25 = hist_data['pm25'].iloc[-1]
-                        curr_pm10 = hist_data['pm10'].iloc[-1]
-                        curr_aqi = hist_data['aqi'].iloc[-1]
-                        curr_category = hist_data['aqi_category'].iloc[-1]
-                        curr_color = hist_data['aqi_color'].iloc[-1]
+                        max_aod = hist_data['aod'].max()
+                        mean_aod = hist_data['aod'].mean()
                         
-                        # Métricas
-                        col_a, col_b = st.columns(2)
+                        # Categorizar qualidade do ar baseado no AOD
+                        def aod_category(value):
+                            if value < 0.1:
+                                return "Boa", "green"
+                            elif value < 0.2:
+                                return "Moderada", "orange"
+                            elif value < 0.5:
+                                return "Insalubre para grupos sensíveis", "red"
+                            else:
+                                return "Perigosa", "darkred"
+                        
+                        current_cat, current_color = aod_category(curr_aod)
+                        
+                        # Mostrar métricas
+                        col_a, col_b, col_c = st.columns(3)
                         col_a.metric("AOD Atual", f"{curr_aod:.3f}")
-                        col_b.metric("IQA", f"{curr_aqi:.0f}")
+                        col_b.metric("AOD Máximo", f"{max_aod:.3f}")
+                        col_c.metric("AOD Médio", f"{mean_aod:.3f}")
                         
-                        col_c, col_d = st.columns(2)
-                        col_c.metric("PM2.5", f"{curr_pm25:.1f} μg/m³")
-                        col_d.metric("PM10", f"{curr_pm10:.1f} μg/m³")
-                        
-                        # Categoria de qualidade
+                        # Mostrar categoria da qualidade do ar
                         st.markdown(f"""
-                        <div style="padding:15px; border-radius:10px; background-color:{curr_color}; 
-                        color:white; text-align:center; margin:10px 0;">
-                        <h3 style="margin:0;">Qualidade do Ar</h3>
-                        <h2 style="margin:5px 0;">{curr_category}</h2>
+                        <div style="padding:10px; border-radius:5px; background-color:{current_color}; color:white; text-align:center; margin:10px 0;">
+                        <h3 style="margin:0;">Qualidade do Ar: {current_cat}</h3>
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # Recomendações
-                        st.subheader("💡 Recomendações")
-                        if curr_aqi <= 50:
-                            st.success("✅ Condições ideais para atividades ao ar livre")
-                        elif curr_aqi <= 100:
-                            st.info("ℹ️ Pessoas sensíveis devem considerar limitar esforços prolongados")
-                        elif curr_aqi <= 150:
-                            st.warning("⚠️ Grupos sensíveis devem evitar esforços ao ar livre")
-                        elif curr_aqi <= 200:
-                            st.error("🚫 Evite esforços prolongados ao ar livre")
-                        else:
-                            st.error("☠️ Evite todas as atividades ao ar livre")
-                        
-                        # Comparação com limites OMS
-                        st.subheader("📏 Comparação com Padrões")
-                        
-                        pm25_who_limit = 25  # μg/m³ (24h)
-                        pm10_who_limit = 50  # μg/m³ (24h)
-                        
-                        st.progress(min(curr_pm25 / pm25_who_limit, 1.0))
-                        st.caption(f"PM2.5: {curr_pm25:.1f}/{pm25_who_limit} μg/m³ (Limite OMS 24h)")
-                        
-                        st.progress(min(curr_pm10 / pm10_who_limit, 1.0))
-                        st.caption(f"PM10: {curr_pm10:.1f}/{pm10_who_limit} μg/m³ (Limite OMS 24h)")
+                        # Previsão para os próximos dias
+                        if not forecast_data.empty:
+                            st.subheader("🔮 Previsão para os próximos dias")
+                            
+                            # Agrupar por dia
+                            forecast_data['date'] = forecast_data['time'].dt.date
+                            daily_forecast = forecast_data.groupby('date')['aod'].mean().reset_index()
+                            
+                            for i, row in daily_forecast.iterrows():
+                                day_cat, day_color = aod_category(row['aod'])
+                                st.markdown(f"""
+                                <div style="padding:5px; border-radius:3px; background-color:{day_color}; color:white; margin:2px 0;">
+                                <b>{row['date'].strftime('%d/%m/%Y')}:</b> AOD médio previsto: {row['aod']:.3f} - {day_cat}
+                                </div>
+                                """, unsafe_allow_html=True)
                     
                     # Exportar dados
                     st.subheader("💾 Exportar Dados")
                     csv = df_combined.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label="⬇️ Baixar Dados Completos (CSV)",
+                        label="⬇️ Baixar Dados (CSV)",
                         data=csv,
-                        file_name=f"AOD_PM_data_{city}_{start_date}_to_{end_date}.csv",
+                        file_name=f"AOD_data_{city}_{start_date}_to_{end_date}.csv",
                         mime="text/csv",
                     )
-
-            # Aba de Alertas de Qualidade do Ar
+            
+            # NOVA ABA: Alerta de Poluição para MS
             with tab2:
-                st.subheader("⚠️ Alertas de Qualidade do Ar - Mato Grosso do Sul")
+                st.subheader("⚠️ Alerta de Poluição para Municípios de MS")
                 
-                if results['top_pollution'] is not None and not results['top_pollution'].empty:
-                    df_alerts = results['top_pollution']
+                # Verificar se temos os dados de todas as cidades
+                if 'top_pollution' in results and not results['top_pollution'].empty:
+                    top_cities = results['top_pollution'].head(20)  # Pegar as 20 primeiras
                     
-                    # Classificar cidades por nível de alerta
-                    high_alert = df_alerts[df_alerts['aqi_max'] > 150]
-                    moderate_alert = df_alerts[(df_alerts['aqi_max'] > 100) & (df_alerts['aqi_max'] <= 150)]
-                    low_alert = df_alerts[df_alerts['aqi_max'] <= 100]
+                    # Criar uma tabela formatada e colorida com as cidades mais críticas
+                    st.markdown("### 🔴 Top 20 Municípios com Maior Previsão de AOD")
                     
-                    # Alertas críticos
-                    if not high_alert.empty:
-                        st.error("🚨 **ALERTA CRÍTICO** - Qualidade do ar insalubre detectada!")
-                        st.dataframe(high_alert, use_container_width=True)
+                    # Adicionar legenda de cores
+                    st.markdown("""
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: darkred; margin-right: 5px;"></div>
+                            <span>AOD ≥ 0.5 (Muito Alto)</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: red; margin-right: 5px;"></div>
+                            <span>AOD ≥ 0.2 (Alto)</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: orange; margin-right: 5px;"></div>
+                            <span>AOD ≥ 0.1 (Moderado)</span>
+                        </div>
+                        <div style="display: flex; align-items: center;">
+                            <div style="width: 20px; height: 20px; background-color: green; margin-right: 5px;"></div>
+                            <span>AOD < 0.1 (Baixo)</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
                     
-                    # Alertas moderados
-                    if not moderate_alert.empty:
-                        st.warning("⚠️ **ATENÇÃO** - Qualidade do ar moderada a insalubre para grupos sensíveis")
-                        st.dataframe(moderate_alert, use_container_width=True)
+                    # Renomear colunas para exibição
+                    top_cities_display = top_cities.rename(columns={
+                        'cidade': 'Município', 
+                        'aod_max': 'AOD Máximo', 
+                        'data_max': 'Data do Pico',
+                        'nivel': 'Nível de Alerta'
+                    })
                     
-                    # Condições normais
-                    if not low_alert.empty:
-                        st.success("✅ **CONDIÇÕES NORMAIS** - Qualidade do ar boa a moderada")
-                        with st.expander("Ver municípios com condições normais"):
-                            st.dataframe(low_alert, use_container_width=True)
+                    # Função para colorir as linhas baseado no valor de AOD
+                    def highlight_aod(val):
+                        try:
+                            aod = float(val['AOD Máximo'])
+                            if aod >= 0.5:
+                                return ['background-color: darkred; color: white'] * len(val)
+                            elif aod >= 0.2:
+                                return ['background-color: red; color: white'] * len(val)
+                            elif aod >= 0.1:
+                                return ['background-color: orange; color: black'] * len(val)
+                            else:
+                                return ['background-color: green; color: white'] * len(val)
+                        except:
+                            return [''] * len(val)
                     
-                    # Resumo estatístico
-                    st.subheader("📊 Resumo Estatístico")
+                    # Exibir tabela formatada
+                    st.dataframe(
+                        top_cities_display.style.apply(highlight_aod, axis=1),
+                        use_container_width=True
+                    )
                     
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Total de Municípios", len(df_alerts))
-                    col2.metric("Alerta Crítico", len(high_alert))
-                    col3.metric("Alerta Moderado", len(moderate_alert))
-                    col4.metric("Condições Normais", len(low_alert))
+                    # Adicionar um aviso se houver cidades com nível alto ou muito alto
+                    high_risk_cities = top_cities[top_cities['aod_max'] >= 0.2]
                     
-                    # Gráfico de distribuição
+                    if not high_risk_cities.empty:
+                        st.warning(f"""
+                        ### ⚠️ ALERTA DE POLUIÇÃO ATMOSFÉRICA
+                        
+                        Detectamos previsão de níveis elevados de AOD (≥ 0.2) para {len(high_risk_cities)} municípios nos próximos 5 dias!
+                        
+                        Os municípios mais críticos são:
+                        - **{high_risk_cities.iloc[0]['cidade']}**: AOD {high_risk_cities.iloc[0]['aod_max']:.3f} em {high_risk_cities.iloc[0]['data_max']}
+                        - **{high_risk_cities.iloc[1]['cidade'] if len(high_risk_cities) > 1 else ''}**: AOD {high_risk_cities.iloc[1]['aod_max']:.3f if len(high_risk_cities) > 1 else 0} em {high_risk_cities.iloc[1]['data_max'] if len(high_risk_cities) > 1 else ''}
+                        - **{high_risk_cities.iloc[2]['cidade'] if len(high_risk_cities) > 2 else ''}**: AOD {high_risk_cities.iloc[2]['aod_max']:.3f if len(high_risk_cities) > 2 else 0} em {high_risk_cities.iloc[2]['data_max'] if len(high_risk_cities) > 2 else ''}
+                        
+                        Recomenda-se atenção especial a pessoas com problemas respiratórios nestas localidades.
+                        """)
+                    
+                    # Exportar dados da tabela
+                    csv_top_cities = top_cities.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Baixar Tabela de Alerta (CSV)",
+                        data=csv_top_cities,
+                        file_name=f"AOD_alerta_MS_{start_date}_to_{end_date}.csv",
+                        mime="text/csv",
+                    )
+                    
+                    # Criar gráfico de barras com as 10 cidades mais críticas
+                    st.subheader("📊 Previsão de AOD Máximo - Top 10 Municípios")
+                    
                     fig, ax = plt.subplots(figsize=(12, 6))
                     
-                    categories = ['Crítico\n(>150)', 'Moderado\n(100-150)', 'Normal\n(≤100)']
-                    counts = [len(high_alert), len(moderate_alert), len(low_alert)]
-                    colors = ['red', 'orange', 'green']
+                    # Selecionar top 10
+                    top10 = top_cities.head(10)
                     
-                    bars = ax.bar(categories, counts, color=colors, alpha=0.7)
-                    ax.set_ylabel('Número de Municípios')
-                    ax.set_title('Distribuição de Alertas de Qualidade do Ar - MS')
+                    # Criar barras com cores baseadas no nível de AOD
+                    colors = []
+                    for aod in top10['aod_max']:
+                        if aod >= 0.5:
+                            colors.append('darkred')
+                        elif aod >= 0.2:
+                            colors.append('red')
+                        elif aod >= 0.1:
+                            colors.append('orange')
+                        else:
+                            colors.append('green')
                     
-                    # Adicionar valores nas barras
-                    for bar, count in zip(bars, counts):
+                    # Plotar gráfico
+                    bars = ax.bar(top10['cidade'], top10['aod_max'], color=colors)
+                    
+                    # Adicionar rótulos
+                    for bar in bars:
                         height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                               f'{count}', ha='center', va='bottom', fontweight='bold')
+                        ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                                f'{height:.3f}', ha='center', va='bottom', 
+                                fontsize=10, rotation=0)
                     
+                    # Formatação do gráfico
+                    ax.set_title('Top 10 Municípios com Maior Previsão de AOD', fontsize=14)
+                    ax.set_xlabel('Município', fontsize=12)
+                    ax.set_ylabel('AOD Máximo Previsto', fontsize=12)
+                    ax.set_ylim(0, max(top10['aod_max']) * 1.2)  # Ajustar limite do eixo Y
+                    ax.axhline(y=0.5, linestyle='--', color='darkred', alpha=0.7)
+                    ax.axhline(y=0.2, linestyle='--', color='red', alpha=0.7)
+                    ax.axhline(y=0.1, linestyle='--', color='orange', alpha=0.7)
+                    plt.xticks(rotation=45, ha='right')
                     plt.tight_layout()
+                    
                     st.pyplot(fig)
                 else:
-                    st.info("Dados de análise estadual não disponíveis no momento.")
+                    st.error("❌ Não foi possível obter dados de previsão para os municípios de MS.")
+                    st.info("Tente novamente com um período diferente ou verifique a conexão com a API do CAMS.")
+    except Exception as e:
+        st.error(f"❌ Ocorreu um erro ao gerar a análise: {str(e)}")
+        st.write("Por favor, verifique os parâmetros e tente novamente.")
 
-            # Aba de
+# Adicionar informações na parte inferior
+st.markdown("---")
+st.markdown("""
+### ℹ️ Sobre os dados
+- **Fonte**: Copernicus Atmosphere Monitoring Service (CAMS)
+- **Variável**: Profundidade Óptica de Aerossóis (AOD) a 550nm
+- **Resolução temporal**: 3 horas
+- **Atualização**: Diária
+- **Previsão**: Até 5 dias à frente
+
+### 📖 Como interpretar:
+- **AOD < 0.1**: Qualidade do ar boa
+- **AOD 0.1-0.2**: Qualidade do ar moderada
+- **AOD 0.2-0.5**: Insalubre para grupos sensíveis
+- **AOD > 0.5**: Qualidade do ar perigosa
+
+### 🔍 Novas funcionalidades:
+- **Alerta de Poluição**: Monitoramento automático dos 79 municípios de MS
+- **Previsão de 5 dias**: Análise de tendências e picos de AOD
+- **Top 20 Municípios**: Identificação das áreas mais críticas
+
+Desenvolvido para monitoramento de aerossóis no estado de Mato Grosso do Sul - Brasil.
+""")

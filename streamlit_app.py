@@ -1125,7 +1125,7 @@ st.markdown("""
 
 **Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
 """)
-            with tab1:
+        with tab1:
                 st.subheader(f"📊 Análise Detalhada - {city}")
                 
                 col1, col2 = st.columns([3, 2])
@@ -1303,4 +1303,5 @@ st.markdown("""
                     st.info("Dados de análise estadual não disponíveis no momento.")
 
             # Aba de
+
 

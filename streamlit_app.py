@@ -1124,7 +1124,7 @@ st.markdown("""
 - Processamento: Sistema desenvolvido para monitoramento ambiental de MS
 
 **Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
-""") Análise do Município
+""")
             with tab1:
                 st.subheader(f"📊 Análise Detalhada - {city}")
                 
@@ -1303,3 +1303,4 @@ st.markdown("""
                     st.info("Dados de análise estadual não disponíveis no momento.")
 
             # Aba de
+

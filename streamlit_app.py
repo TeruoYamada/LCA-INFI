@@ -884,7 +884,7 @@ st.sidebar.subheader("Método de Previsão")
 prediction_method = st.sidebar.selectbox(
     "Selecione o método de previsão",
     ['ensemble', 'linear', 'polynomial', 'arima', 'exponential', 'random_forest'],
-    index=0  # ensemble como padrão)
+    index=0)  # ensemble como padrão)
 
 # No processamento:
 df_forecast = predict_future_aod_advanced(df_timeseries, days=5, method=prediction_method)
@@ -1183,3 +1183,4 @@ st.markdown("""
 
 Desenvolvido para monitoramento de aerossóis no estado de Mato Grosso do Sul - Brasil.
 """)
+

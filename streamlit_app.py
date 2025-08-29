@@ -58,54 +58,6 @@ def load_ms_municipalities():
         st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
         return gpd.GeoDataFrame(columns=['NM_MUN', 'geometry'], crs="EPSG:4326")
 
-# Função para adicionar shape do município ao mapa
-def add_municipality_shape(ax, city_name, ms_shapes):
-    """
-    Adiciona o contorno do município ao mapa do matplotlib/cartopy
-    """
-    try:
-        # Buscar o município no GeoDataFrame
-        city_shape = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city_name.upper()]
-        
-        if not city_shape.empty:
-            # Pegar a geometria do município
-            geometry = city_shape.geometry.iloc[0]
-            
-            # Verificar se é um Polygon ou MultiPolygon
-            if hasattr(geometry, 'geoms'):  # MultiPolygon
-                for geom in geometry.geoms:
-                    if hasattr(geom, 'exterior'):
-                        # Extrair coordenadas do contorno
-                        coords = list(geom.exterior.coords)
-                        lons, lats = zip(*coords)
-                        ax.plot(lons, lats, color='red', linewidth=3, 
-                               transform=ccrs.PlateCarree(), alpha=0.9,
-                               label=f'Limite de {city_name}')
-                        
-                        # Adicionar preenchimento semi-transparente
-                        ax.fill(lons, lats, color='red', alpha=0.15, 
-                               transform=ccrs.PlateCarree())
-            else:  # Polygon simples
-                if hasattr(geometry, 'exterior'):
-                    coords = list(geometry.exterior.coords)
-                    lons, lats = zip(*coords)
-                    ax.plot(lons, lats, color='red', linewidth=3, 
-                           transform=ccrs.PlateCarree(), alpha=0.9,
-                           label=f'Limite de {city_name}')
-                    
-                    # Adicionar preenchimento semi-transparente
-                    ax.fill(lons, lats, color='red', alpha=0.15, 
-                           transform=ccrs.PlateCarree())
-            
-            return True
-        else:
-            st.warning(f"Shape do município {city_name} não encontrado")
-            return False
-            
-    except Exception as e:
-        st.warning(f"Erro ao adicionar shape do município: {str(e)}")
-        return False
-
 # 🎯 Lista completa dos municípios de MS com coordenadas
 cities = {
     "Água Clara": [-20.4453, -52.8792],
@@ -203,7 +155,6 @@ Material Particulado (PM2.5 e PM10) para todos os municípios de Mato Grosso do 
 
 **Novidades desta versão:**
 - 🎯 Visualização centralizada no município selecionado
-- 🗺️ **Shape do município destacado no mapa**
 - 🔬 Estimativa de PM2.5 e PM10 baseada em literatura científica regional
 - 🔥 Ajustes específicos para períodos de queimadas
 - 📊 Índice de Qualidade do Ar (IQA) calculado
@@ -520,7 +471,7 @@ def analyze_all_cities(ds, aod_var, cities_dict):
     else:
         return pd.DataFrame(columns=['cidade', 'aod_max', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
 
-# Função principal atualizada - SEM TÍTULO DA CIDADE NO MAPA
+# Função principal atualizada com centralização no município
 def generate_aod_analysis():
     dataset = "cams-global-atmospheric-composition-forecasts"
     
@@ -540,7 +491,8 @@ def generate_aod_analysis():
     if not hours:
         hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
     
-    # Centralizar a área de requisição no município selecionado
+    # MODIFICAÇÃO: Centralizar a área de requisição no município selecionado
+    # Definir área de interesse centrada no município com buffer
     buffer = 1.5  # Graus de buffer ao redor do município
     city_bounds = {
         'north': lat_center + buffer,
@@ -591,7 +543,7 @@ def generate_aod_analysis():
         with st.spinner("Gerando previsões..."):
             df_forecast = predict_future_values(df_timeseries, days=5)
         
-        # Criar animação centralizada no município COM SHAPE - SEM TÍTULO DA CIDADE
+        # Criar animação centralizada no município
         if 'forecast_reference_time' in da.dims:
             time_dim = 'forecast_reference_time'
             frames = len(da[time_dim])
@@ -612,8 +564,8 @@ def generate_aod_analysis():
         ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
         
         # Adicionar features
-        ax.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.7)
-        ax.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.7)
+        ax.add_feature(cfeature.LAND, facecolor='lightgray')
+        ax.add_feature(cfeature.OCEAN, facecolor='lightblue')
         ax.coastlines(resolution='50m', color='black', linewidth=0.5)
         ax.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle=':', color='gray')
         ax.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='black', linewidth=1)
@@ -623,18 +575,20 @@ def generate_aod_analysis():
         gl.top_labels = False
         gl.right_labels = False
         
-        # Definir extensão do mapa para cobrir área ao redor do município
+        # MODIFICAÇÃO: Definir extensão do mapa para cobrir área ao redor do município
         ax.set_extent([city_bounds['west'], city_bounds['east'], 
                       city_bounds['south'], city_bounds['north']], 
                      crs=ccrs.PlateCarree())
         
-        # ✨ ADICIONAR SHAPE DO MUNICÍPIO (SEM TÍTULO ACIMA)
-        shape_added = add_municipality_shape(ax, city, ms_shapes)
+        # MODIFICAÇÃO: Título com o nome do município
+        ax.text(lon_center, city_bounds['north'] + 0.1, city.upper(), 
+                transform=ccrs.PlateCarree(), fontsize=18, fontweight='bold',
+                ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.5', 
+                facecolor='white', alpha=0.8))
         
-        # Marcar o centro do município selecionado no mapa
-        ax.plot(lon_center, lat_center, 'o', markersize=12, transform=ccrs.PlateCarree(), 
-                color='red', markeredgecolor='white', markeredgewidth=2,
-                label=f'Centro de {city}')
+        # Marcar o município selecionado no mapa
+        ax.plot(lon_center, lat_center, 'ro', markersize=12, transform=ccrs.PlateCarree(), 
+                label=city, markeredgecolor='white', markeredgewidth=2)
         
         # Adicionar outros municípios próximos (opcional)
         nearby_cities = []
@@ -646,15 +600,12 @@ def generate_aod_analysis():
                 city_name != city):
                 nearby_cities.append((city_name, city_lat, city_lon))
         
-        # Mostrar até 6 cidades próximas (reduzido para não poluir o mapa)
-        for city_name, city_lat, city_lon in nearby_cities[:6]:
-            ax.plot(city_lon, city_lat, 'o', markersize=6, transform=ccrs.PlateCarree(), 
-                   color='blue', markeredgecolor='white', markeredgewidth=1)
-            # Opcional: adicionar nome da cidade pequeno (pode ser removido se desejar)
-            ax.text(city_lon + 0.02, city_lat + 0.02, city_name, fontsize=8, 
-                   transform=ccrs.PlateCarree(), 
-                   bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', 
-                            alpha=0.7, edgecolor='blue', linewidth=1))
+        # Mostrar até 5 cidades próximas
+        for city_name, city_lat, city_lon in nearby_cities[:5]:
+            ax.plot(city_lon, city_lat, 'ko', markersize=6, transform=ccrs.PlateCarree())
+            ax.text(city_lon + 0.05, city_lat + 0.05, city_name, fontsize=8, 
+                   transform=ccrs.PlateCarree(), bbox=dict(boxstyle='round,pad=0.2', 
+                   facecolor='yellow', alpha=0.7))
         
         # Obter primeiro frame
         if 'forecast_period' in da.dims and 'forecast_reference_time' in da.dims:
@@ -676,30 +627,16 @@ def generate_aod_analysis():
         
         # Criar mapa de cores
         im = ax.pcolormesh(ds.longitude, ds.latitude, first_frame_data, 
-                         cmap=colormap, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), alpha=0.8)
+                         cmap=colormap, vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree())
         
         # Adicionar barra de cores
         cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal')
         cbar.set_label('AOD 550nm', fontsize=12)
         cbar.ax.tick_params(labelsize=10)
         
-        # Título APENAS com data/hora - SEM NOME DA CIDADE
-        title = ax.set_title(f'AOD 550nm\n{first_frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
-                           fontsize=14, pad=15)
-        
-        # Adicionar legenda com shape do município destacado
-        if shape_added:
-            legend_elements = [
-                plt.Line2D([0], [0], color='red', linewidth=3, alpha=0.9,
-                          label=f'Limite de {city}'),
-                plt.Line2D([0], [0], marker='o', color='red', markersize=8, 
-                          markeredgecolor='white', markeredgewidth=2, linestyle='None', 
-                          label=f'Centro de {city}'),
-                plt.Line2D([0], [0], marker='o', color='blue', markersize=5, 
-                          markeredgecolor='white', linestyle='None', 
-                          label='Outros municípios')
-            ]
-            ax.legend(handles=legend_elements, loc='upper left', framealpha=0.9, fontsize=10)
+        # Título inicial
+        title = ax.set_title(f'AOD 550nm - {city}\n{first_frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
+                           fontsize=14, pad=20)
         
         # Função de animação
         def animate(i):
@@ -719,8 +656,7 @@ def generate_aod_analysis():
                     frame_time = pd.to_datetime(da[time_dim].values[t_idx])
                 
                 im.set_array(frame_data.ravel())
-                # Título APENAS com data/hora - SEM NOME DA CIDADE
-                title.set_text(f'AOD 550nm\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
+                title.set_text(f'AOD 550nm - {city}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
                 
                 return [im, title]
             except Exception as e:
@@ -784,8 +720,7 @@ def generate_aod_analysis():
             'forecast': df_forecast,
             'dataset': ds,
             'variable': aod_var,
-            'top_pollution': top_pollution_cities,
-            'shape_loaded': shape_added
+            'top_pollution': top_pollution_cities
         }
     
     except Exception as e:
@@ -795,12 +730,8 @@ def generate_aod_analysis():
         return None
 
 # Carregar shapefiles dos municípios
-with st.spinner("🗺️ Carregando shapes dos municípios de MS..."):
+with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
-    if not ms_shapes.empty:
-        st.success(f"✅ {len(ms_shapes)} municípios carregados com sucesso!")
-    else:
-        st.warning("⚠️ Shapes dos municípios não disponíveis - usando pontos centrais")
 
 # Sidebar para configurações
 st.sidebar.header("⚙️ Configurações")
@@ -810,20 +741,11 @@ available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(se
 if not available_cities:
     available_cities = list(cities.keys())
 
-city = st.sidebar.selectbox("🏙️ Selecione o município para análise detalhada", 
-                           sorted(available_cities), 
-                           help="O shape do município será destacado no mapa")
+city = st.sidebar.selectbox("Selecione o município para análise detalhada", available_cities)
 lat_center, lon_center = cities[city]
 
-# Mostrar informações do município selecionado
-st.sidebar.info(f"""
-**Município Selecionado:** {city}
-**Coordenadas:** {lat_center:.4f}°S, {abs(lon_center):.4f}°W
-**Shape disponível:** {'✅ Sim' if city.upper() in ms_shapes['NM_MUN'].str.upper().values else '❌ Não'}
-""")
-
 # Configurações de data e hora
-st.sidebar.subheader("📅 Período de Análise")
+st.sidebar.subheader("Período de Análise")
 start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
 end_date = st.sidebar.date_input("Data Final", datetime.today() + timedelta(days=5))
 
@@ -832,27 +754,22 @@ start_hour = st.sidebar.selectbox("Horário Inicial", all_hours, format_func=lam
 end_hour = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours)-1, format_func=lambda x: f"{x:02d}:00")
 
 # Opções avançadas
-st.sidebar.subheader("🎨 Opções Avançadas")
+st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
     animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
     colormap = st.selectbox("Paleta de Cores", 
                           ["YlOrRd", "viridis", "plasma", "inferno", "magma", "cividis", "RdYlBu_r"])
     show_pm_estimates = st.checkbox("Mostrar estimativas de PM2.5/PM10", value=True)
     show_fire_adjustments = st.checkbox("Aplicar ajustes para queimadas", value=True)
-    show_nearby_cities = st.checkbox("Mostrar municípios próximos", value=True)
 
 # Informações sobre o período
 current_month = datetime.now().month
 if 5 <= current_month <= 9:
-    st.sidebar.warning("🔥 **Período de Queimadas Ativo**\nAs estimativas de PM são ajustadas para refletir as condições típicas de queimadas na região.")
+    st.sidebar.info("🔥 **Período de Queimadas Ativo**\nAs estimativas de PM são ajustadas para refletir as condições típicas de queimadas na região.")
 
 # Botão principal
 st.markdown("### 🚀 Iniciar Análise Completa")
-st.markdown(f"""
-Clique no botão abaixo para gerar análise de AOD e PM centralizada em **{city}**.
-
-🗺️ **Mapa Limpo:** O contorno do município será destacado sem título sobreposto!
-""")
+st.markdown(f"Clique no botão abaixo para gerar análise de AOD e PM centralizada em **{city}**.")
 
 if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_container_width=True):
     try:
@@ -870,14 +787,6 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
             # Aba do Mapa
             with tab3:
                 st.subheader(f"🎬 Animação AOD 550nm - {city}")
-                
-                # Mostrar status do shape
-                if results.get('shape_loaded', False):
-                    st.success(f"✅ **Shape do município {city} carregado com sucesso!**")
-                    st.info("🔴 **Contorno vermelho** = Limite municipal | 🔴 **Ponto vermelho** = Centro da cidade")
-                else:
-                    st.warning(f"⚠️ Shape do município {city} não disponível - usando apenas coordenadas centrais")
-                
                 st.image(results['animation'], caption=f"Evolução temporal do AOD em {city} ({start_date} a {end_date})")
                 
                 with open(results['animation'], "rb") as file:
@@ -889,242 +798,18 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     )
                 
                 # Informações sobre o mapa
-                col1, col2 = st.columns(2)
+                st.info(f"""
+                **Como interpretar o mapa de {city}:**
+                - 🟢 Verde/Azul: AOD < 0.1 (Ar limpo)
+                - 🟡 Amarelo: AOD 0.1-0.2 (Qualidade moderada)
+                - 🟠 Laranja: AOD 0.2-0.5 (Poluição elevada)
+                - 🔴 Vermelho: AOD > 0.5 (Condições severas)
                 
-                with col1:
-                    st.info(f"""
-                    **Como interpretar o mapa:**
-                    - 🟢 Verde/Azul: AOD < 0.1 (Ar limpo)
-                    - 🟡 Amarelo: AOD 0.1-0.2 (Qualidade moderada)
-                    - 🟠 Laranja: AOD 0.2-0.5 (Poluição elevada)
-                    - 🔴 Vermelho: AOD > 0.5 (Condições severas)
-                    """)
-                
-                with col2:
-                    st.info(f"""
-                    **Elementos do mapa:**
-                    - 🔴 **Contorno vermelho:** Limite de {city}
-                    - 🔴 **Ponto grande:** Centro de {city}
-                    - 🔵 **Pontos azuis:** Outros municípios
-                    - 📅 **Título:** Apenas data/hora (mapa limpo)
-                    """)
-                
-                # Informações técnicas sobre shapes
-                with st.expander("ℹ️ Informações sobre os Shapes Municipais"):
-                    st.markdown(f"""
-                    ### Dados Geoespaciais - {city}
-                    
-                    **Fonte dos Shapes:** IBGE - Malha Municipal 2022
-                    **Sistema de Coordenadas:** EPSG:4326 (WGS84)
-                    **Precisão:** Baseada na malha oficial dos municípios brasileiros
-                    
-                    **Processamento:**
-                    - Shape carregado diretamente do servidor IBGE
-                    - Contorno renderizado em tempo real no mapa
-                    - Preenchimento semi-transparente (15% alpha) para destacar a área
-                    - Coordenadas centrais calculadas automaticamente
-                    - Mapa limpo sem título da cidade sobreposto
-                    
-                    **Municípios disponíveis:** {len(ms_shapes)} de 79 municípios de MS
-                    
-                    {"✅ Shape encontrado e renderizado com sucesso!" if results.get('shape_loaded', False) else "❌ Shape não encontrado - usando coordenadas pontuais"}
-                    """)
-
-            # Continuar com as outras abas (análise, alertas, PM) - mantendo o código das outras abas
-            # Aba de Análise PM2.5/PM10
-            with tab4:
-                st.subheader("📈 Análise Detalhada de Material Particulado")
-                
-                df_combined = results['forecast']
-                
-                # Análise estatística
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("📊 Estatísticas PM2.5")
-                    
-                    pm25_stats = df_combined['pm25'].describe()
-                    
-                    col_a, col_b = st.columns(2)
-                    col_a.metric("Média", f"{pm25_stats['mean']:.1f} μg/m³")
-                    col_b.metric("Máximo", f"{pm25_stats['max']:.1f} μg/m³")
-                    
-                    col_c, col_d = st.columns(2)
-                    col_c.metric("Mínimo", f"{pm25_stats['min']:.1f} μg/m³")
-                    col_d.metric("Desvio", f"{pm25_stats['std']:.1f} μg/m³")
-                    
-                    # Percentual acima do limite OMS
-                    above_who_pm25 = (df_combined['pm25'] > 25).sum()
-                    total_points = len(df_combined)
-                    pct_above_pm25 = (above_who_pm25 / total_points) * 100
-                    
-                    if pct_above_pm25 > 50:
-                        st.error(f"🚨 {pct_above_pm25:.1f}% dos pontos acima do limite OMS (25 μg/m³)")
-                    elif pct_above_pm25 > 20:
-                        st.warning(f"⚠️ {pct_above_pm25:.1f}% dos pontos acima do limite OMS (25 μg/m³)")
-                    else:
-                        st.success(f"✅ {pct_above_pm25:.1f}% dos pontos acima do limite OMS (25 μg/m³)")
-                
-                with col2:
-                    st.subheader("📊 Estatísticas PM10")
-                    
-                    pm10_stats = df_combined['pm10'].describe()
-                    
-                    col_a, col_b = st.columns(2)
-                    col_a.metric("Média", f"{pm10_stats['mean']:.1f} μg/m³")
-                    col_b.metric("Máximo", f"{pm10_stats['max']:.1f} μg/m³")
-                    
-                    col_c, col_d = st.columns(2)
-                    col_c.metric("Mínimo", f"{pm10_stats['min']:.1f} μg/m³")
-                    col_d.metric("Desvio", f"{pm10_stats['std']:.1f} μg/m³")
-                    
-                    # Percentual acima do limite OMS
-                    above_who_pm10 = (df_combined['pm10'] > 50).sum()
-                    pct_above_pm10 = (above_who_pm10 / total_points) * 100
-                    
-                    if pct_above_pm10 > 50:
-                        st.error(f"🚨 {pct_above_pm10:.1f}% dos pontos acima do limite OMS (50 μg/m³)")
-                    elif pct_above_pm10 > 20:
-                        st.warning(f"⚠️ {pct_above_pm10:.1f}% dos pontos acima do limite OMS (50 μg/m³)")
-                    else:
-                        st.success(f"✅ {pct_above_pm10:.1f}% dos pontos acima do limite OMS (50 μg/m³)")
-                
-                # Gráficos de distribuição
-                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
-                
-                # Histograma PM2.5
-                ax1.hist(df_combined['pm25'], bins=20, alpha=0.7, color='green', edgecolor='black')
-                ax1.axvline(x=25, color='red', linestyle='--', linewidth=2, label='Limite OMS (25 μg/m³)')
-                ax1.set_xlabel('PM2.5 (μg/m³)')
-                ax1.set_ylabel('Frequência')
-                ax1.set_title('Distribuição de PM2.5')
-                ax1.legend()
-                ax1.grid(True, alpha=0.3)
-                
-                # Histograma PM10
-                ax2.hist(df_combined['pm10'], bins=20, alpha=0.7, color='brown', edgecolor='black')
-                ax2.axvline(x=50, color='red', linestyle='--', linewidth=2, label='Limite OMS (50 μg/m³)')
-                ax2.set_xlabel('PM10 (μg/m³)')
-                ax2.set_ylabel('Frequência')
-                ax2.set_title('Distribuição de PM10')
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-                
-                # Série temporal comparativa
-                ax3.plot(df_combined['time'], df_combined['pm25'], 
-                        'o-', color='green', label='PM2.5', markersize=4, alpha=0.8)
-                ax3.plot(df_combined['time'], df_combined['pm10'], 
-                        'o-', color='brown', label='PM10', markersize=4, alpha=0.8)
-                ax3.axhline(y=25, color='green', linestyle='--', alpha=0.7, label='Limite OMS PM2.5')
-                ax3.axhline(y=50, color='brown', linestyle='--', alpha=0.7, label='Limite OMS PM10')
-                ax3.set_xlabel('Data/Hora')
-                ax3.set_ylabel('Concentração (μg/m³)')
-                ax3.set_title('Evolução Temporal de PM2.5 e PM10')
-                ax3.legend()
-                ax3.grid(True, alpha=0.3)
-                ax3.tick_params(axis='x', rotation=45)
-                
-                # Correlação AOD vs PM
-                ax4.scatter(df_combined['aod'], df_combined['pm25'], 
-                           alpha=0.6, color='green', label='PM2.5', s=30)
-                ax4.scatter(df_combined['aod'], df_combined['pm10'], 
-                           alpha=0.6, color='brown', label='PM10', s=30)
-                ax4.set_xlabel('AOD 550nm')
-                ax4.set_ylabel('PM (μg/m³)')
-                ax4.set_title('Correlação AOD vs Material Particulado')
-                ax4.legend()
-                ax4.grid(True, alpha=0.3)
-                
-                plt.tight_layout()
-                st.pyplot(fig)
-                
-                # Análise de correlação
-                st.subheader("🔬 Análise de Correlação")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    # Correlação AOD-PM2.5
-                    corr_aod_pm25 = df_combined['aod'].corr(df_combined['pm25'])
-                    st.metric("Correlação AOD-PM2.5", f"{corr_aod_pm25:.3f}")
-                    
-                    if corr_aod_pm25 > 0.8:
-                        st.success("✅ Correlação muito forte")
-                    elif corr_aod_pm25 > 0.6:
-                        st.info("ℹ️ Correlação forte")
-                    elif corr_aod_pm25 > 0.4:
-                        st.warning("⚠️ Correlação moderada")
-                    else:
-                        st.error("❌ Correlação fraca")
-                
-                with col2:
-                    # Correlação AOD-PM10
-                    corr_aod_pm10 = df_combined['aod'].corr(df_combined['pm10'])
-                    st.metric("Correlação AOD-PM10", f"{corr_aod_pm10:.3f}")
-                    
-                    if corr_aod_pm10 > 0.8:
-                        st.success("✅ Correlação muito forte")
-                    elif corr_aod_pm10 > 0.6:
-                        st.info("ℹ️ Correlação forte")
-                    elif corr_aod_pm10 > 0.4:
-                        st.warning("⚠️ Correlação moderada")
-                    else:
-                        st.error("❌ Correlação fraca")
-                
-                # Informações sobre metodologia
-                with st.expander("ℹ️ Metodologia de Estimativa de PM"):
-                    st.markdown("""
-                    ### Metodologia de Conversão AOD → PM
-                    
-                    **Fórmulas Utilizadas:**
-                    - **Estação Seca (Maio-Set):** PM2.5 = AOD × 110 × f(queimadas) × f(umidade) + 8
-                    - **Estação Normal:** PM2.5 = AOD × 85 × f(queimadas) × f(umidade) + 8
-                    - **PM10:** Aproximadamente 1.5× PM2.5 para aerossóis de queimada
-                    
-                    **Fatores de Correção:**
-                    - **Queimadas:** Multiplicador de 1.5-2.0× quando AOD > 0.3 na estação seca
-                    - **Umidade:** Fator higroscópico f(RH) = (1-RH/100)^(-0.7)
-                    - **Background:** +8 μg/m³ para PM2.5, +15 μg/m³ para PM10
-                    
-                    **Limitações:**
-                    - Estimativas baseadas em literatura científica para América do Sul
-                    - Incertezas podem ser significativas durante eventos extremos
-                    - Recomenda-se validação com medições diretas quando disponíveis
-                    
-                    **Referências:**
-                    - van Donkelaar et al. (2010) - Conversões AOD-PM para América do Sul
-                    - Reddington et al. (2019) - Aerossóis de queimada na Amazônia
-                    - OMS - Diretrizes de qualidade do ar (2021)
-                    """)
+                O ponto vermelho marca a localização de **{city}**.
+                Os pontos pretos indicam outros municípios próximos.
+                """)
             
-    except Exception as e:
-        st.error(f"❌ Erro durante a análise: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
-
-# Rodapé informativo
-st.markdown("---")
-st.markdown("""
-### ℹ️ Informações Importantes
-
-**🗺️ Novidade - Mapa Limpo:**
-- Shape do município destacado com contorno vermelho
-- Título do mapa contém apenas data/hora (sem nome da cidade sobreposto)
-- Visualização mais limpa e profissional
-- Legenda clara identificando os elementos
-
-**Sobre as Estimativas:**
-- As concentrações de PM2.5/PM10 são estimadas a partir do AOD usando modelos empíricos validados para a América do Sul
-- Os valores podem apresentar incertezas, especialmente durante eventos extremos
-- Para decisões críticas, recomenda-se validação com medições diretas
-
-**Dados Fornecidos por:**
-- CAMS (Copernicus Atmosphere Monitoring Service) - União Europeia
-- IBGE - Malha Municipal (Shapes dos municípios)
-- Processamento: Sistema desenvolvido para monitoramento ambiental de MS
-
-**Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
-""") Análise do Município
+            # Aba de Análise do Município
             with tab1:
                 st.subheader(f"📊 Análise Detalhada - {city}")
                 
@@ -1232,6 +917,27 @@ st.markdown("""
                         
                         st.progress(min(curr_pm10 / pm10_who_limit, 1.0))
                         st.caption(f"PM10: {curr_pm10:.1f}/{pm10_who_limit} μg/m³ (Limite OMS 24h)")
+                        
+                        # Previsão resumida
+                        if not forecast_data.empty:
+                            st.subheader("🔮 Próximos 5 dias")
+                            
+                            forecast_data['date'] = forecast_data['time'].dt.date
+                            daily_forecast = forecast_data.groupby('date').agg({
+                                'aqi': 'max',
+                                'aqi_category': lambda x: x.iloc[x.values.argmax()],
+                                'pm25': 'mean',
+                                'pm10': 'mean'
+                            }).reset_index()
+                            
+                            for _, row in daily_forecast.iterrows():
+                                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
+                                st.markdown(f"""
+                                <div style="padding:5px; border-radius:5px; background-color:{aqi_color}; 
+                                color:{'white' if aqi_color != 'yellow' else 'black'}; margin:2px 0;">
+                                <b>{row['date'].strftime('%d/%m')}:</b> IQA {row['aqi']:.0f} - {row['aqi_category']}
+                                </div>
+                                """, unsafe_allow_html=True)
                     
                     # Exportar dados
                     st.subheader("💾 Exportar Dados")
@@ -1242,64 +948,502 @@ st.markdown("""
                         file_name=f"AOD_PM_data_{city}_{start_date}_to_{end_date}.csv",
                         mime="text/csv",
                     )
-
-            # Aba de Alertas de Qualidade do Ar
+            
+            # Aba de Alertas
             with tab2:
-                st.subheader("⚠️ Alertas de Qualidade do Ar - Mato Grosso do Sul")
+                st.subheader("⚠️ Alerta de Qualidade do Ar - Mato Grosso do Sul")
                 
-                if results['top_pollution'] is not None and not results['top_pollution'].empty:
-                    df_alerts = results['top_pollution']
+                if 'top_pollution' in results and not results['top_pollution'].empty:
+                    top_cities = results['top_pollution'].head(20)
                     
-                    # Classificar cidades por nível de alerta
-                    high_alert = df_alerts[df_alerts['aqi_max'] > 150]
-                    moderate_alert = df_alerts[(df_alerts['aqi_max'] > 100) & (df_alerts['aqi_max'] <= 150)]
-                    low_alert = df_alerts[df_alerts['aqi_max'] <= 100]
+                    # Estatísticas gerais
+                    critical_cities = top_cities[top_cities['aqi_max'] > 100]
+                    very_critical = top_cities[top_cities['aqi_max'] > 150]
                     
-                    # Alertas críticos
-                    if not high_alert.empty:
-                        st.error("🚨 **ALERTA CRÍTICO** - Qualidade do ar insalubre detectada!")
-                        st.dataframe(high_alert, use_container_width=True)
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Cidades em Alerta", len(critical_cities))
+                    col2.metric("Condição Insalubre", len(very_critical))
+                    col3.metric("IQA Máximo Previsto", f"{top_cities['aqi_max'].max():.0f}")
                     
-                    # Alertas moderados
-                    if not moderate_alert.empty:
-                        st.warning("⚠️ **ATENÇÃO** - Qualidade do ar moderada a insalubre para grupos sensíveis")
-                        st.dataframe(moderate_alert, use_container_width=True)
+                    if len(critical_cities) > 0:
+                        st.error(f"""
+                        ### 🚨 ALERTA DE QUALIDADE DO AR
+                        
+                        **{len(critical_cities)} municípios** com previsão de qualidade do ar 
+                        inadequada nos próximos 5 dias!
+                        
+                        Municípios mais críticos:
+                        1. **{top_cities.iloc[0]['cidade']}**: IQA {top_cities.iloc[0]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[0]['pm25_max']:.1f} μg/m³
+                        2. **{top_cities.iloc[1]['cidade']}**: IQA {top_cities.iloc[1]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[1]['pm25_max']:.1f} μg/m³
+                        3. **{top_cities.iloc[2]['cidade']}**: IQA {top_cities.iloc[2]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[2]['pm25_max']:.1f} μg/m³
+                        """)
                     
-                    # Condições normais
-                    if not low_alert.empty:
-                        st.success("✅ **CONDIÇÕES NORMAIS** - Qualidade do ar boa a moderada")
-                        with st.expander("Ver municípios com condições normais"):
-                            st.dataframe(low_alert, use_container_width=True)
+                    # Tabela completa
+                    st.markdown("### 📊 Ranking de Qualidade do Ar por Município")
                     
-                    # Resumo estatístico
-                    st.subheader("📊 Resumo Estatístico")
+                    # Renomear colunas
+                    top_cities_display = top_cities.rename(columns={
+                        'cidade': 'Município',
+                        'aod_max': 'AOD Máx',
+                        'pm25_max': 'PM2.5 Máx (μg/m³)',
+                        'pm10_max': 'PM10 Máx (μg/m³)',
+                        'aqi_max': 'IQA Máx',
+                        'data_max': 'Data Crítica',
+                        'categoria': 'Categoria'
+                    })
                     
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Total de Municípios", len(df_alerts))
-                    col2.metric("Alerta Crítico", len(high_alert))
-                    col3.metric("Alerta Moderado", len(moderate_alert))
-                    col4.metric("Condições Normais", len(low_alert))
+                    # Função para colorir
+                    def style_aqi_row(row):
+                        aqi = row['IQA Máx']
+                        if aqi <= 50:
+                            return ['background-color: #00e400; color: black'] * len(row)
+                        elif aqi <= 100:
+                            return ['background-color: #ffff00; color: black'] * len(row)
+                        elif aqi <= 150:
+                            return ['background-color: #ff7e00; color: white'] * len(row)
+                        elif aqi <= 200:
+                            return ['background-color: #ff0000; color: white'] * len(row)
+                        elif aqi <= 300:
+                            return ['background-color: #8f3f97; color: white'] * len(row)
+                        else:
+                            return ['background-color: #7e0023; color: white'] * len(row)
                     
-                    # Gráfico de distribuição
-                    fig, ax = plt.subplots(figsize=(12, 6))
+                    # Exibir tabela estilizada
+                    st.dataframe(
+                        top_cities_display.style.apply(style_aqi_row, axis=1),
+                        use_container_width=True
+                    )
                     
-                    categories = ['Crítico\n(>150)', 'Moderado\n(100-150)', 'Normal\n(≤100)']
-                    counts = [len(high_alert), len(moderate_alert), len(low_alert)]
-                    colors = ['red', 'orange', 'green']
+                    # MODIFICAÇÃO: Gráfico apenas do Material Particulado
+                    st.subheader("📊 Material Particulado Previsto - 10 Municípios Mais Críticos")
                     
-                    bars = ax.bar(categories, counts, color=colors, alpha=0.7)
-                    ax.set_ylabel('Número de Municípios')
-                    ax.set_title('Distribuição de Alertas de Qualidade do Ar - MS')
+                    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+                    
+                    top10 = top_cities.head(10)
+                    
+                    # Criar posições para as barras
+                    x_pos = np.arange(len(top10))
+                    width = 0.35
+                    
+                    # Gráfico PM2.5 e PM10
+                    bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width, 
+                                  color='darkblue', alpha=0.8, label='PM2.5')
+                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, 
+                                  color='brown', alpha=0.8, label='PM10')
+                    
+                    ax.set_xticks(x_pos)
+                    ax.set_xticklabels(top10['cidade'], rotation=45, ha='right')
+                    ax.set_ylabel('Concentração (μg/m³)', fontsize=12)
+                    ax.set_title('Material Particulado Máximo Previsto nos Próximos 5 Dias', fontsize=14)
+                    
+                    # Linhas de referência OMS
+                    ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite PM2.5 OMS (25 μg/m³)')
+                    ax.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='Limite PM10 OMS (50 μg/m³)')
+                    
+                    ax.legend()
+                    ax.grid(True, alpha=0.3)
                     
                     # Adicionar valores nas barras
-                    for bar, count in zip(bars, counts):
-                        height = bar.get_height()
-                        ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                               f'{count}', ha='center', va='bottom', fontweight='bold')
+                    for bar, val in zip(bars1, top10['pm25_max']):
+                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
+                    
+                    for bar, val in zip(bars2, top10['pm10_max']):
+                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
                     
                     plt.tight_layout()
                     st.pyplot(fig)
+                    
+                    # Download dos dados
+                    csv_alert = top_cities.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="⬇️ Baixar Dados de Alerta (CSV)",
+                        data=csv_alert,
+                        file_name=f"Alerta_Qualidade_Ar_MS_{start_date}_to_{end_date}.csv",
+                        mime="text/csv",
+                    )
                 else:
-                    st.info("Dados de análise estadual não disponíveis no momento.")
+                    st.info("Dados de análise estadual não disponíveis. Mostrando apenas análise local.")
+            
+            # Nova aba para análise PM
+            with tab4:
+                st.subheader("📈 Análise Detalhada de Material Particulado")
+                
+                # Informações sobre a metodologia
+                with st.expander("ℹ️ Sobre a Metodologia de Conversão AOD → PM"):
+                    st.markdown("""
+                    ### Metodologia de Conversão AOD para PM2.5/PM10
+                    
+                    Esta aplicação utiliza fórmulas empíricas calibradas para a América do Sul, 
+                    considerando as características específicas da região:
+                    
+                    **Fórmula Base:**
+                    ```
+                    PM2.5 = AOD × η × multiplicador_queimadas × correção_umidade + background
+                    ```
+                    
+                    **Parâmetros utilizados:**
+                    - **η (eta)**: Fator de conversão regional
+                      - Estação seca (maio-set): 110 μg/m³ por unidade AOD
+                      - Estação úmida: 85 μg/m³ por unidade AOD
+                    - **Multiplicador de queimadas**: 1.5-2.5x quando detectado
+                    - **Correção de umidade**: f(RH) = (1 - RH/100)^(-0.7)
+                    - **Background**: 8 μg/m³ (PM2.5), 15 μg/m³ (PM10)
+                    
+                    **Referências:**
+                    - Estudos de validação MAIAC na América do Sul
+                    - Calibração regional para biomassa queimada
+                    - Análise de correlação AOD-PM em estações CETESB
+                    """)
+                
+                df_combined = results['forecast']
+                
+                if not df_combined.empty:
+                    # Separar dados históricos e previsões
+                    hist_data = df_combined[df_combined['type'] == 'historical']
+                    forecast_data = df_combined[df_combined['type'] == 'forecast']
+                    
+                    # Análise estatística dos dados históricos
+                    if not hist_data.empty:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.subheader("📊 Estatísticas Históricas")
+                            
+                            # Métricas estatísticas
+                            stats_data = {
+                                'Métrica': ['Média', 'Mediana', 'Máximo', 'Mínimo', 'Desvio Padrão'],
+                                'AOD': [
+                                    f"{hist_data['aod'].mean():.3f}",
+                                    f"{hist_data['aod'].median():.3f}",
+                                    f"{hist_data['aod'].max():.3f}",
+                                    f"{hist_data['aod'].min():.3f}",
+                                    f"{hist_data['aod'].std():.3f}"
+                                ],
+                                'PM2.5 (μg/m³)': [
+                                    f"{hist_data['pm25'].mean():.1f}",
+                                    f"{hist_data['pm25'].median():.1f}",
+                                    f"{hist_data['pm25'].max():.1f}",
+                                    f"{hist_data['pm25'].min():.1f}",
+                                    f"{hist_data['pm25'].std():.1f}"
+                                ],
+                                'PM10 (μg/m³)': [
+                                    f"{hist_data['pm10'].mean():.1f}",
+                                    f"{hist_data['pm10'].median():.1f}",
+                                    f"{hist_data['pm10'].max():.1f}",
+                                    f"{hist_data['pm10'].min():.1f}",
+                                    f"{hist_data['pm10'].std():.1f}"
+                                ],
+                                'IQA': [
+                                    f"{hist_data['aqi'].mean():.0f}",
+                                    f"{hist_data['aqi'].median():.0f}",
+                                    f"{hist_data['aqi'].max():.0f}",
+                                    f"{hist_data['aqi'].min():.0f}",
+                                    f"{hist_data['aqi'].std():.0f}"
+                                ]
+                            }
+                            
+                            stats_df = pd.DataFrame(stats_data)
+                            st.dataframe(stats_df, use_container_width=True)
+                            
+                            # Análise de tendência
+                            if len(hist_data) > 2:
+                                # Correlação AOD vs PM
+                                corr_aod_pm25 = hist_data['aod'].corr(hist_data['pm25'])
+                                corr_aod_pm10 = hist_data['aod'].corr(hist_data['pm10'])
+                                
+                                st.subheader("🔍 Correlações")
+                                st.metric("AOD vs PM2.5", f"{corr_aod_pm25:.3f}")
+                                st.metric("AOD vs PM10", f"{corr_aod_pm10:.3f}")
+                                
+                                # Tendência temporal
+                                hist_data_copy = hist_data.copy()
+                                hist_data_copy['time_numeric'] = (hist_data_copy['time'] - hist_data_copy['time'].min()).dt.total_seconds()
+                                
+                                slope_aod, _, r_aod, _, _ = stats.linregress(hist_data_copy['time_numeric'], hist_data_copy['aod'])
+                                slope_pm25, _, r_pm25, _, _ = stats.linregress(hist_data_copy['time_numeric'], hist_data_copy['pm25'])
+                                
+                                st.subheader("📈 Tendências Temporais")
+                                trend_aod = "↗️ Crescente" if slope_aod > 0 else "↘️ Decrescente" if slope_aod < 0 else "➡️ Estável"
+                                trend_pm25 = "↗️ Crescente" if slope_pm25 > 0 else "↘️ Decrescente" if slope_pm25 < 0 else "➡️ Estável"
+                                
+                                st.write(f"**AOD**: {trend_aod} (R² = {r_aod**2:.3f})")
+                                st.write(f"**PM2.5**: {trend_pm25} (R² = {r_pm25**2:.3f})")
+                        
+                        with col2:
+                            st.subheader("🎯 Distribuição dos Valores")
+                            
+                            # Histograma PM2.5
+                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+                            
+                            ax1.hist(hist_data['pm25'], bins=15, alpha=0.7, color='darkblue', edgecolor='black')
+                            ax1.axvline(hist_data['pm25'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm25"].mean():.1f}')
+                            ax1.axvline(25, color='orange', linestyle=':', label='Limite OMS: 25 μg/m³')
+                            ax1.set_xlabel('PM2.5 (μg/m³)')
+                            ax1.set_ylabel('Frequência')
+                            ax1.set_title('Distribuição PM2.5')
+                            ax1.legend()
+                            ax1.grid(True, alpha=0.3)
+                            
+                            # Histograma PM10
+                            ax2.hist(hist_data['pm10'], bins=15, alpha=0.7, color='brown', edgecolor='black')
+                            ax2.axvline(hist_data['pm10'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm10"].mean():.1f}')
+                            ax2.axvline(50, color='orange', linestyle=':', label='Limite OMS: 50 μg/m³')
+                            ax2.set_xlabel('PM10 (μg/m³)')
+                            ax2.set_ylabel('Frequência')
+                            ax2.set_title('Distribuição PM10')
+                            ax2.legend()
+                            ax2.grid(True, alpha=0.3)
+                            
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            
+                            # Percentis de qualidade do ar
+                            st.subheader("📊 Percentis de Qualidade")
+                            
+                            percentis = [10, 25, 50, 75, 90]
+                            perc_data = []
+                            
+                            for p in percentis:
+                                perc_data.append({
+                                    'Percentil': f'P{p}',
+                                    'PM2.5': f"{np.percentile(hist_data['pm25'], p):.1f}",
+                                    'PM10': f"{np.percentile(hist_data['pm10'], p):.1f}",
+                                    'IQA': f"{np.percentile(hist_data['aqi'], p):.0f}"
+                                })
+                            
+                            perc_df = pd.DataFrame(perc_data)
+                            st.dataframe(perc_df, use_container_width=True)
+                    
+                    # Análise das previsões
+                    if not forecast_data.empty:
+                        st.subheader("🔮 Análise das Previsões (Próximos 5 Dias)")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            # Gráfico de evolução temporal das previsões
+                            fig, ax = plt.subplots(figsize=(12, 6))
+                            
+                            # Plot AOD vs PM2.5 ao longo do tempo
+                            ax2 = ax.twinx()
+                            
+                            line1 = ax.plot(forecast_data['time'], forecast_data['aod'], 
+                                          'o-', color='blue', label='AOD', markersize=4)
+                            line2 = ax2.plot(forecast_data['time'], forecast_data['pm25'], 
+                                           's-', color='red', label='PM2.5', markersize=4)
+                            
+                            ax.set_xlabel('Data/Hora')
+                            ax.set_ylabel('AOD 550nm', color='blue')
+                            ax2.set_ylabel('PM2.5 (μg/m³)', color='red')
+                            
+                            ax.tick_params(axis='y', labelcolor='blue')
+                            ax2.tick_params(axis='y', labelcolor='red')
+                            
+                            # Linha de referência OMS para PM2.5
+                            ax2.axhline(y=25, color='orange', linestyle='--', alpha=0.7)
+                            
+                            # Formatar datas
+                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+                            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
+                            
+                            ax.grid(True, alpha=0.3)
+                            ax.set_title('Evolução Temporal: AOD vs PM2.5 (Previsão)')
+                            
+                            # Legendas
+                            lines = line1 + line2
+                            labels = [l.get_label() for l in lines]
+                            ax.legend(lines, labels, loc='upper left')
+                            
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                        
+                        with col2:
+                            # Análise por período do dia
+                            forecast_data['hour'] = forecast_data['time'].dt.hour
+                            
+                            # Agrupar por período do dia
+                            periods = {
+                                'Madrugada (0-6h)': forecast_data[forecast_data['hour'].isin(range(0, 7))],
+                                'Manhã (6-12h)': forecast_data[forecast_data['hour'].isin(range(6, 13))],
+                                'Tarde (12-18h)': forecast_data[forecast_data['hour'].isin(range(12, 19))],
+                                'Noite (18-24h)': forecast_data[forecast_data['hour'].isin(range(18, 24))]
+                            }
+                            
+                            period_stats = []
+                            for period_name, period_data in periods.items():
+                                if not period_data.empty:
+                                    period_stats.append({
+                                        'Período': period_name,
+                                        'PM2.5 Médio': f"{period_data['pm25'].mean():.1f}",
+                                        'PM10 Médio': f"{period_data['pm10'].mean():.1f}",
+                                        'IQA Máximo': f"{period_data['aqi'].max():.0f}",
+                                        'Categoria Pior': period_data.loc[period_data['aqi'].idxmax(), 'aqi_category'] if not period_data.empty else 'N/A'
+                                    })
+                            
+                            if period_stats:
+                                st.subheader("⏰ Análise por Período do Dia")
+                                period_df = pd.DataFrame(period_stats)
+                                st.dataframe(period_df, use_container_width=True)
+                            
+                            # Dias críticos
+                            st.subheader("🚨 Dias Mais Críticos")
+                            
+                            forecast_data['date'] = forecast_data['time'].dt.date
+                            daily_max = forecast_data.groupby('date').agg({
+                                'aqi': 'max',
+                                'pm25': 'max',
+                                'pm10': 'max',
+                                'aqi_category': lambda x: x.iloc[x.values.argmax()]
+                            }).reset_index().sort_values('aqi', ascending=False)
+                            
+                            for idx, row in daily_max.head(3).iterrows():
+                                date_str = row['date'].strftime('%d/%m/%Y')
+                                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
+                                
+                                st.markdown(f"""
+                                <div style="padding:10px; border-radius:8px; background-color:{aqi_color}; 
+                                color:{'white' if aqi_color not in ['yellow'] else 'black'}; margin:5px 0;">
+                                <b>{date_str}</b><br>
+                                IQA: {row['aqi']:.0f} - {row['aqi_category']}<br>
+                                PM2.5: {row['pm25']:.1f} μg/m³ | PM10: {row['pm10']:.1f} μg/m³
+                                </div>
+                                """, unsafe_allow_html=True)
+                    
+                    # Gráfico de correlação AOD vs PM
+                    if not hist_data.empty:
+                        st.subheader("📈 Correlação AOD vs Material Particulado")
+                        
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+                        
+                        # AOD vs PM2.5
+                        ax1.scatter(hist_data['aod'], hist_data['pm25'], alpha=0.6, color='darkblue')
+                        
+                        # Linha de tendência
+                        z1 = np.polyfit(hist_data['aod'], hist_data['pm25'], 1)
+                        p1 = np.poly1d(z1)
+                        ax1.plot(hist_data['aod'], p1(hist_data['aod']), "r--", alpha=0.8)
+                        
+                        ax1.set_xlabel('AOD 550nm')
+                        ax1.set_ylabel('PM2.5 (μg/m³)')
+                        ax1.set_title(f'AOD vs PM2.5\nR² = {hist_data["aod"].corr(hist_data["pm25"])**2:.3f}')
+                        ax1.grid(True, alpha=0.3)
+                        
+                        # AOD vs PM10
+                        ax2.scatter(hist_data['aod'], hist_data['pm10'], alpha=0.6, color='brown')
+                        
+                        # Linha de tendência
+                        z2 = np.polyfit(hist_data['aod'], hist_data['pm10'], 1)
+                        p2 = np.poly1d(z2)
+                        ax2.plot(hist_data['aod'], p2(hist_data['aod']), "r--", alpha=0.8)
+                        
+                        ax2.set_xlabel('AOD 550nm')
+                        ax2.set_ylabel('PM10 (μg/m³)')
+                        ax2.set_title(f'AOD vs PM10\nR² = {hist_data["aod"].corr(hist_data["pm10"])**2:.3f}')
+                        ax2.grid(True, alpha=0.3)
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                    
+                    # Comparação com padrões internacionais
+                    st.subheader("🌍 Comparação com Padrões Internacionais")
+                    
+                    standards = {
+                        'Padrão': ['OMS (24h)', 'EPA (24h)', 'CONAMA (24h)', 'UE (24h)'],
+                        'PM2.5 (μg/m³)': [25, 35, 60, 25],
+                        'PM10 (μg/m³)': [50, 150, 150, 50]
+                    }
+                    
+                    standards_df = pd.DataFrame(standards)
+                    
+                    if not df_combined.empty:
+                        current_pm25 = df_combined['pm25'].iloc[-1] if len(df_combined) > 0 else 0
+                        current_pm10 = df_combined['pm10'].iloc[-1] if len(df_combined) > 0 else 0
+                        
+                        standards_df['Status PM2.5'] = standards_df['PM2.5 (μg/m³)'].apply(
+                            lambda x: '✅ OK' if current_pm25 <= x else '❌ Excede'
+                        )
+                        standards_df['Status PM10'] = standards_df['PM10 (μg/m³)'].apply(
+                            lambda x: '✅ OK' if current_pm10 <= x else '❌ Excede'
+                        )
+                    
+                    st.dataframe(standards_df, use_container_width=True)
+                    
+                    # Recomendações técnicas
+                    st.subheader("💡 Recomendações Técnicas")
+                    
+                    if not df_combined.empty:
+                        max_pm25_forecast = forecast_data['pm25'].max() if not forecast_data.empty else 0
+                        max_aqi_forecast = forecast_data['aqi'].max() if not forecast_data.empty else 0
+                        
+                        recommendations = []
+                        
+                        if max_pm25_forecast > 60:
+                            recommendations.append("🚨 **Alta concentração de PM2.5 prevista** - Considere alertar grupos sensíveis")
+                        
+                        if max_aqi_forecast > 150:
+                            recommendations.append("⚠️ **IQA Insalubre previsto** - Recomende evitar atividades ao ar livre")
+                        
+                        if is_fire_season(datetime.now()):
+                            recommendations.append("🔥 **Período de queimadas ativo** - Monitoramento intensificado recomendado")
+                        
+                        fire_season_data = forecast_data[forecast_data['time'].apply(is_fire_season)]
+                        if not fire_season_data.empty and fire_season_data['aod'].max() > 0.3:
+                            recommendations.append("🌪️ **Possível influência de queimadas detectada** - Valores de PM podem estar elevados")
+                        
+                        if hist_data['aod'].std() > 0.1:
+                            recommendations.append("📊 **Alta variabilidade nos dados** - Monitoramento contínuo recomendado")
+                        
+                        if not recommendations:
+                            recommendations.append("✅ **Condições dentro dos padrões esperados** - Mantenha monitoramento de rotina")
+                        
+                        for rec in recommendations:
+                            st.markdown(f"- {rec}")
+                
+                else:
+                    st.warning("Dados insuficientes para análise detalhada de PM.")
+    
+    except Exception as e:
+        st.error(f"❌ Erro durante a análise: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
 
-            # Aba de
+# Rodapé informativo
+st.markdown("---")
+st.markdown("""
+### ℹ️ Informações Importantes
+
+**Sobre as Estimativas:**
+- As concentrações de PM2.5/PM10 são estimadas a partir do AOD usando modelos empíricos validados para a América do Sul
+- Os valores podem apresentar incertezas, especialmente durante eventos extremos
+- Para decisões críticas, recomenda-se validação com medições diretas
+
+**Dados Fornecidos por:**
+- CAMS (Copernicus Atmosphere Monitoring Service) - União Europeia
+- Processamento: Sistema desenvolvido para monitoramento ambiental de MS
+
+**Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
+""")
+
+# Informações de contato/suporte
+with st.expander("📞 Suporte e Informações Técnicas"):
+    st.markdown("""
+    ### Suporte Técnico
+    
+    **Parâmetros do Sistema:**
+    - Resolução espacial: ~0.4° x 0.4° (≈ 44 km)
+    - Resolução temporal: 3 horas
+    - Previsão: Até 5 dias
+    - Variável principal: AOD 550nm
+    
+    **Limitações:**
+    - Dados dependem da disponibilidade do CAMS
+    - Estimativas de PM baseadas em modelos empíricos
+    - Resolução espacial limitada para análises locais muito específicas
+    
+    **Para Melhor Precisão:**
+    - Use dados de múltiplos pontos temporais
+    - Valide com medições locais quando disponível
+    - Considere condições meteorológicas locais
+    """)

@@ -622,12 +622,16 @@ def generate_pm_analysis():
                 client.retrieve(dataset, request_ms).download(filename_ms)
             
             ds_ms = xr.open_dataset(filename_ms)
-            pm25_var_ms = next((var for var in ds_ms.data_vars if '2.5' in var), None)
-            pm10_var_ms = next((var for var in ds_ms.data_vars if '10' in var and '2.5' not in var), None)
+            pm25_var_ms = 'particulate_matter_2.5um'
+            pm10_var_ms = 'particulate_matter_10um'
             
-            if pm25_var_ms and pm10_var_ms:
+            # Verificar se as variáveis existem no dataset de MS
+            if pm25_var_ms in ds_ms.data_vars and pm10_var_ms in ds_ms.data_vars:
                 with st.spinner("🔍 Analisando qualidade do ar em todos os municípios..."):
                     top_pollution_cities = analyze_all_cities(ds_ms, pm25_var_ms, pm10_var_ms, cities)
+            else:
+                st.warning(f"Variáveis PM não encontradas no dataset de MS. Disponíveis: {list(ds_ms.data_vars)}")
+                top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
         except Exception as e:
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
             top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
@@ -1081,3 +1085,66 @@ st.markdown("""
 
 **Desenvolvido para:** Secretaria de Estado de Meio Ambiente, Desenvolvimento, Ciência, Tecnologia e Inovação (SEMADESC) - MS
 """)
+
+with st.expander("📋 Informações Técnicas"):
+    st.markdown("""
+    ### Especificações Técnicas
+    
+    **Variáveis Monitoradas:**
+    - PM2.5: Material particulado < 2.5 μm
+    - PM10: Material particulado < 10 μm
+    - IQA: Índice de Qualidade do Ar (baseado em padrões EPA/OMS)
+    
+    **Conversões:**
+    - Dados CAMS em kg/m³ convertidos para μg/m³
+    - IQA calculado usando breakpoints EPA adaptados
+    
+    **Cobertura:**
+    - 79 municípios de Mato Grosso do Sul
+    - Previsão: até 5 dias
+    - Frequência temporal: 3 horas
+    
+    **Metodologia IQA:**
+    ```
+    0-50:   Boa
+    51-100: Moderada
+    101-150: Insalubre para Grupos Sensíveis
+    151-200: Insalubre
+    201-300: Muito Insalubre
+    301-500: Perigosa
+    ```
+    
+    **Validação:**
+    - Dados validados com estações de monitoramento quando disponíveis
+    - Comparação com padrões internacionais (OMS, EPA, CONAMA)
+    - Incertezas típicas: ±20-30% para PM2.5, ±15-25% para PM10
+    """)
+
+# Informações de contato
+st.markdown("""
+### 📞 Suporte
+
+Para dúvidas técnicas ou reportar problemas:
+- **E-mail:** [suporte.ambiente@ms.gov.br](mailto:suporte.ambiente@ms.gov.br)
+- **Telefone:** (67) 3318-6000
+- **Horário:** Segunda a Sexta, 8h às 18h
+
+### 🔗 Links Úteis
+
+- [Portal SEMADESC](https://www.semadesc.ms.gov.br/)
+- [CAMS - Copernicus](https://atmosphere.copernicus.eu/)
+- [Padrões de Qualidade do Ar - OMS](https://www.who.int/news-room/feature-stories/detail/what-are-the-who-air-quality-guidelines)
+- [CONAMA - Padrões Nacionais](http://conama.mma.gov.br/)
+
+---
+**Sistema desenvolvido em:** {datetime.now().strftime('%B %Y')} | **Versão:** 2.0 | **Última atualização:** {datetime.now().strftime('%d/%m/%Y')}
+""")
+
+# Footer com informações legais
+st.markdown("""
+<div style='text-align: center; color: #666; font-size: 12px; margin-top: 20px; padding: 10px; border-top: 1px solid #ddd;'>
+    <p>© 2024 Secretaria de Estado de Meio Ambiente, Desenvolvimento, Ciência, Tecnologia e Inovação - SEMADESC/MS</p>
+    <p>Dados fornecidos pelo CAMS (Copernicus Atmosphere Monitoring Service) sob licença Copernicus</p>
+    <p>Este sistema é fornecido apenas para fins informativos. Para decisões críticas de saúde pública, consulte sempre fontes oficiais.</p>
+</div>
+""", unsafe_allow_html=True)

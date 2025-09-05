@@ -1081,21 +1081,3 @@ st.markdown("""
 
 **Desenvolvido para:** Secretaria de Estado de Meio Ambiente, Desenvolvimento, Ciência, Tecnologia e Inovação (SEMADESC) - MS
 """)
-
-with st.expander("📋 Informações Técnicas"):
-    st.markdown("""
-    ### Especificações Técnicas
-    
-    **Variáveis Monitoradas:**
-    - PM2.5: Material particulado < 2.5 μm
-    - PM10: Material particulado < 10 μm
-    - IQA: Índice de Qualidade do Ar (baseado em padrões EPA/OMS)
-    
-    **Conversões:**
-    - Dados CAMS em kg/m³ convertidos para μg/m³
-    - IQA calculado usando breakpoints EPA adaptados
-    
-    **Cobertura:**
-    - 79 municípios de Mato Grosso do Sul
-    - Previsão: até 5 dias
-    - Frequência temporal: 3

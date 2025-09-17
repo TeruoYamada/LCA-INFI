@@ -360,66 +360,6 @@ def generate_pm_analysis_with_enhanced_map():
 
 # Modificação na interface para mostrar o mapa contextualizado
 # (Na parte onde os resultados são exibidos, substituir a aba do mapa por:)
-
-with tab3:  # Aba do Mapa
-    st.subheader(f"🗺️ Localização e Qualidade do Ar - {city}")
-    
-    if 'enhanced_map' in results:
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.image(results['enhanced_map'], 
-                    caption=f"Contexto Estadual e Detalhe de {city} - {start_date}")
-            
-            with open(results['enhanced_map'], "rb") as file:
-                btn = st.download_button(
-                    label="⬇️ Baixar Mapa Contextualizado (PNG)",
-                    data=file,
-                    file_name=f"Mapa_Contexto_{city}_{start_date}.png",
-                    mime="image/png"
-                )
-        
-        with col2:
-            st.markdown("### 🎯 Interpretação do Mapa")
-            st.markdown("""
-            **Mapa da Esquerda (MS Completo):**
-            - Mostra a localização do município em MS
-            - Município destacado em vermelho
-            - Contexto geográfico estadual
-            
-            **Mapa da Direita (Detalhe Local):**
-            - Concentração de PM2.5 na região
-            - Escala de cores: Verde (baixa) → Vermelho (alta)
-            - Ponto preto: localização exata do município
-            
-            **Escala de Qualidade:**
-            - 🟢 0-12 μg/m³: Boa
-            - 🟡 12-35 μg/m³: Moderada  
-            - 🟠 35-55 μg/m³: Insalubre (sensíveis)
-            - 🔴 >55 μg/m³: Insalubre
-            """)
-            
-            # Adicionar informações sobre municípios vizinhos se disponível
-            if not ms_shapes.empty:
-                try:
-                    # Encontrar municípios próximos
-                    from shapely.geometry import Point
-                    point = Point(lon_center, lat_center)
-                    
-                    # Calcular distâncias
-                    ms_shapes['distance'] = ms_shapes.geometry.centroid.distance(point)
-                    nearest = ms_shapes.nsmallest(6, 'distance')['NM_MUN'].tolist()
-                    
-                    # Remover o município atual da lista
-                    if city in nearest:
-                        nearest.remove(city)
-                    
-                    if len(nearest) >= 3:
-                        st.markdown("### 🏘️ Municípios Próximos")
-                        for i, neighbor in enumerate(nearest[:5], 1):
-                            st.write(f"{i}. {neighbor}")
-                except:
-                    pass
     
     # Informações técnicas sobre os dados
     with st.expander("ℹ️ Informações Técnicas dos Mapas"):

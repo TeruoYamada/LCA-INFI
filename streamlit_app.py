@@ -160,180 +160,100 @@ def create_fallback_shapefile():
     return gpd.GeoDataFrame(municipalities_data, crs="EPSG:4326")
 
 # Função para criar mapa com contexto estadual (nova função)
-def create_enhanced_map_with_context(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0):
-    """Cria mapa mostrando MS completo com destaque no município selecionado"""
-    
-    # Coordenadas de MS completo
-    ms_bounds = {
-        'north': -17.5,
-        'south': -24.0,
-        'east': -50.5,
-        'west': -58.5
-    }
-    
-    # Criar figura
-    fig = plt.figure(figsize=(16, 12))
-    
-    # Layout com dois subplots: contexto estadual (esquerda) e detalhe municipal (direita)
-    gs = fig.add_gridspec(2, 2, height_ratios=[3, 1], width_ratios=[1, 1.2])
-    
-    # Mapa do contexto estadual (MS completo)
-    ax1 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
-    
-    # Configurar mapa estadual
-    ax1.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.5)
-    ax1.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.3)
-    ax1.coastlines(resolution='50m', color='black', linewidth=0.8)
-    ax1.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle='-', color='black', linewidth=1.5)
-    ax1.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='darkblue', linewidth=2)
-    
-    # Definir extensão para MS
-    ax1.set_extent([ms_bounds['west'], ms_bounds['east'], 
-                   ms_bounds['south'], ms_bounds['north']], 
-                  crs=ccrs.PlateCarree())
-    
-    # Adicionar shapefile de MS se disponível
-    if not ms_shapes.empty:
+
+def plot_municipality_with_shape(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0,
+                                figsize=(12,8), buffer_km_deg=0.8):
+    """Create a figure with:
+       - overall state context (left)
+       - detailed map centered on municipality (right)
+       The municipality polygon (if found in ms_shapes) will be drawn around the main point.
+       Title with municipality name will be placed above the figure (fig.suptitle).
+    """
+
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    import numpy as np
+
+    # Create figure and gridspec
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.3], wspace=0.12)
+
+    # --- Left: State context ---
+    ax0 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
+    ax0.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.6)
+    ax0.add_feature(cfeature.COASTLINE, linewidth=0.5)
+    ax0.add_feature(cfeature.BORDERS, linewidth=0.5)
+
+    if ms_shapes is not None and not ms_shapes.empty:
         try:
-            # Plotar todos os municípios de MS
-            ms_shapes.boundary.plot(ax=ax1, color='gray', linewidth=0.5, alpha=0.7, transform=ccrs.PlateCarree())
-            
-            # Destacar o município selecionado
-            selected_municipality = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
-            if not selected_municipality.empty:
-                selected_municipality.plot(ax=ax1, color='red', alpha=0.6, 
-                                         edgecolor='darkred', linewidth=2, 
-                                         transform=ccrs.PlateCarree())
+            ms_shapes.boundary.plot(ax=ax0, color='gray', linewidth=0.4, transform=ccrs.PlateCarree())
+            selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+            if not selected.empty:
+                selected.plot(ax=ax0, facecolor='none', edgecolor='red', linewidth=1.6, transform=ccrs.PlateCarree())
             else:
-                # Se não encontrar no shapefile, marcar com círculo
-                ax1.plot(lon_center, lat_center, 'ro', markersize=15, 
-                        transform=ccrs.PlateCarree(), 
-                        markeredgecolor='darkred', markeredgewidth=3)
-        except Exception as e:
-            st.warning(f"Erro ao plotar shapefile: {e}")
-            # Fallback: apenas marcar a cidade
-            ax1.plot(lon_center, lat_center, 'ro', markersize=15, 
-                    transform=ccrs.PlateCarree(),
-                    markeredgecolor='darkred', markeredgewidth=3)
+                ax0.plot(lon_center, lat_center, 'o', color='red', markersize=6, transform=ccrs.PlateCarree())
+        except Exception:
+            ax0.plot(lon_center, lat_center, 'o', color='red', markersize=6, transform=ccrs.PlateCarree())
     else:
-        # Marcar cidade sem shapefile
-        ax1.plot(lon_center, lat_center, 'ro', markersize=15, 
-                transform=ccrs.PlateCarree(),
-                markeredgecolor='darkred', markeredgewidth=3)
-    
-    # Grid para mapa estadual
-    gl1 = ax1.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
-    gl1.top_labels = False
-    gl1.right_labels = False
-    gl1.xlabel_style = {'size': 9}
-    gl1.ylabel_style = {'size': 9}
-    
-    ax1.set_title(f'Localização em Mato Grosso do Sul\n{city}', 
-                 fontsize=14, fontweight='bold', pad=15)
-    
-    # Mapa detalhado do município (direita)
-    ax2 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
-    
-    # Área de interesse centrada no município com buffer menor
-    buffer = 0.8
-    city_bounds = {
-        'north': lat_center + buffer,
-        'south': lat_center - buffer,
-        'east': lon_center + buffer,
-        'west': lon_center - buffer
-    }
-    
-    # Configurar mapa detalhado
-    ax2.add_feature(cfeature.LAND, facecolor='lightgray')
-    ax2.add_feature(cfeature.OCEAN, facecolor='lightblue')
-    ax2.coastlines(resolution='50m', color='black', linewidth=0.5)
-    ax2.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle=':', color='gray')
-    ax2.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='black', linewidth=1)
-    
-    ax2.set_extent([city_bounds['west'], city_bounds['east'], 
-                   city_bounds['south'], city_bounds['north']], 
-                  crs=ccrs.PlateCarree())
-    
-    # Adicionar dados de PM2.5 no mapa detalhado
-    da_pm25 = ds[pm25_var]
-    
-    # Converter unidades se necessário
-    if da_pm25.max().values < 1:
-        da_pm25 = da_pm25 * 1e9
-    
-    # Obter frame específico ou primeiro disponível
+        ax0.plot(lon_center, lat_center, 'o', color='red', markersize=6, transform=ccrs.PlateCarree())
+
+    ax0.set_extent([-58.5, -50.5, -24.0, -17.5], crs=ccrs.PlateCarree())
+    ax0.set_title('Localização no Estado', fontsize=10)
+
+    # --- Right: Detailed map centered on municipality ---
+    ax1 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
+    ax1.add_feature(cfeature.LAND, facecolor='lightgray')
+    ax1.add_feature(cfeature.COASTLINE, linewidth=0.4)
+    ax1.add_feature(cfeature.BORDERS, linestyle=':', linewidth=0.4)
+
+    buffer = buffer_km_deg
+    ax1.set_extent([lon_center - buffer, lon_center + buffer, lat_center - buffer, lat_center + buffer], crs=ccrs.PlateCarree())
+
     try:
-        if 'forecast_period' in da_pm25.dims and 'forecast_reference_time' in da_pm25.dims:
-            frame_data = da_pm25.isel(forecast_period=0, forecast_reference_time=frame_idx).values
-            frame_time = pd.to_datetime(ds.forecast_reference_time.values[frame_idx])
+        da = ds[pm25_var]
+        if 'forecast_reference_time' in da.dims and 'forecast_period' in da.dims:
+            frame = da.isel(forecast_reference_time=0, forecast_period=frame_idx).values
         else:
-            time_dims = [dim for dim in da_pm25.dims if 'time' in dim or 'forecast' in dim]
-            time_dim = time_dims[0] if time_dims else list(da_pm25.dims)[0]
-            frame_data = da_pm25.isel({time_dim: frame_idx}).values
-            frame_time = pd.to_datetime(da_pm25[time_dim].values[frame_idx])
-    except:
-        # Usar primeiro frame disponível
-        if 'forecast_period' in da_pm25.dims and 'forecast_reference_time' in da_pm25.dims:
-            frame_data = da_pm25.isel(forecast_period=0, forecast_reference_time=0).values
-            frame_time = pd.to_datetime(ds.forecast_reference_time.values[0])
-        else:
-            frame_data = da_pm25.isel({list(da_pm25.dims)[0]: 0}).values
-            frame_time = pd.to_datetime(str(ds.attrs.get('creation_date', 'Atual')))
-    
-    # Definir escala de cores
-    vmin, vmax = 0, min(150, float(da_pm25.max().values * 1.1))
-    
-    # Plotar dados de PM2.5
-    im = ax2.pcolormesh(ds.longitude, ds.latitude, frame_data, 
-                       cmap='YlOrRd', vmin=vmin, vmax=vmax, 
-                       transform=ccrs.PlateCarree(), alpha=0.8)
-    
-    # Marcar o município no mapa detalhado
-    ax2.plot(lon_center, lat_center, 'ko', markersize=12, 
-            transform=ccrs.PlateCarree(), 
-            markeredgecolor='white', markeredgewidth=3)
-    
-    # Adicionar nome do município
-    ax2.text(lon_center, lat_center + 0.1, city.upper(), 
-            transform=ccrs.PlateCarree(), fontsize=12, fontweight='bold',
-            ha='center', va='bottom', 
-            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
-    
-    # Grid para mapa detalhado
-    gl2 = ax2.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
-    gl2.top_labels = False
-    gl2.right_labels = False
-    gl2.xlabel_style = {'size': 9}
-    gl2.ylabel_style = {'size': 9}
-    
-    ax2.set_title(f'Concentração PM2.5\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
-                 fontsize=14, fontweight='bold', pad=15)
-    
-    # Barra de cores horizontal abaixo dos mapas
-    cbar_ax = fig.add_subplot(gs[1, :])
-    cbar = plt.colorbar(im, cax=cbar_ax, orientation='horizontal', fraction=0.05, pad=0.1)
-    cbar.set_label('Concentração PM2.5 (μg/m³)', fontsize=12, fontweight='bold')
-    cbar.ax.tick_params(labelsize=10)
-    
-    # Adicionar marcadores de qualidade do ar na barra de cores
-    quality_levels = [12, 35, 55, 150]
-    quality_labels = ['Boa', 'Moderada', 'Insalubre\n(Sensíveis)', 'Insalubre']
-    quality_colors = ['green', 'yellow', 'orange', 'red']
-    
-    for level, label, color in zip(quality_levels, quality_labels, quality_colors):
-        if level <= vmax:
-            cbar.ax.axvline(x=level, color=color, linestyle='--', alpha=0.8, linewidth=2)
-            cbar.ax.text(level, 0.5, label, rotation=90, ha='right', va='center', 
-                        fontsize=9, fontweight='bold', color=color,
-                        transform=cbar.ax.get_xaxis_transform())
-    
-    # Informações adicionais
-    fig.text(0.02, 0.02, 
-             f'Fonte: CAMS | Resolução: ~44km | Município destacado em vermelho no mapa estadual',
-             fontsize=10, ha='left', va='bottom', style='italic')
-    
-    plt.tight_layout()
+            time_dims = [d for d in da.dims if 'time' in d or 'forecast' in d]
+            td = time_dims[0] if time_dims else da.dims[0]
+            frame = da.isel({td: frame_idx}).values
+
+        vmin, vmax = np.nanmin(frame), np.nanpercentile(frame, 97)
+        im = ax1.pcolormesh(ds.longitude, ds.latitude, frame, cmap='YlOrRd',
+                            vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), alpha=0.85)
+    except Exception:
+        im = None
+
+    if ms_shapes is not None and not ms_shapes.empty:
+        selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+        if not selected.empty:
+            try:
+                selected.plot(ax=ax1, facecolor='none', edgecolor='red', linewidth=2.0, transform=ccrs.PlateCarree())
+            except Exception:
+                pass
+
+    ax1.plot(lon_center, lat_center, marker='o', markersize=8,
+             markeredgecolor='white', markerfacecolor='black', transform=ccrs.PlateCarree())
+
+    fig.suptitle(f"{city.upper()}", fontsize=16, fontweight='bold', y=0.98)
+
+    try:
+        if im is not None and 'frame_time' in locals():
+            ax1.set_title(f"{frame_time.strftime('%d/%m/%Y %H:%M UTC')}", fontsize=10)
+        elif im is not None:
+            ax1.set_title('', fontsize=10)
+    except Exception:
+        ax1.set_title('', fontsize=10)
+
+    if im is not None:
+        cax = fig.add_axes([0.62, 0.07, 0.28, 0.03])
+        cb = plt.colorbar(im, cax=cax, orientation='horizontal')
+        cb.set_label('Concentração PM2.5 (μg/m³)')
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     return fig
+
 
 # Modificar a função principal de análise para usar o novo mapa
 def generate_pm_analysis_with_enhanced_map():
@@ -1721,4 +1641,3 @@ with st.expander("📞 Suporte e Informações Técnicas"):
     - Valide com medições locais quando disponível
     - Monitore tendências de longo prazo
     """)
-

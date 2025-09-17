@@ -163,11 +163,10 @@ def create_fallback_shapefile():
 
 def plot_municipality_with_shape(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0,
                                 figsize=(12,8), buffer_km_deg=0.8):
-    """Create a figure with:
-       - overall state context (left)
-       - detailed map centered on municipality (right)
-       The municipality polygon (if found in ms_shapes) will be drawn around the main point.
-       Title with municipality name will be placed above the figure (fig.suptitle).
+    """Cria um mapa com:
+       - Contexto: Estado de Mato Grosso do Sul (lado esquerdo)
+       - Detalhe: município escolhido com contorno (lado direito)
+       O título com o nome do município fica acima da figura.
     """
 
     import matplotlib.pyplot as plt
@@ -175,11 +174,10 @@ def plot_municipality_with_shape(ds, pm25_var, city, lat_center, lon_center, ms_
     import cartopy.feature as cfeature
     import numpy as np
 
-    # Create figure and gridspec
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.3], wspace=0.12)
 
-    # --- Left: State context ---
+    # --- Mapa de contexto: Mato Grosso do Sul ---
     ax0 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
     ax0.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.6)
     ax0.add_feature(cfeature.COASTLINE, linewidth=0.5)
@@ -187,21 +185,18 @@ def plot_municipality_with_shape(ds, pm25_var, city, lat_center, lon_center, ms_
 
     if ms_shapes is not None and not ms_shapes.empty:
         try:
-            ms_shapes.boundary.plot(ax=ax0, color='gray', linewidth=0.4, transform=ccrs.PlateCarree())
+            ms_shapes.boundary.plot(ax=ax0, color='gray', linewidth=0.5, transform=ccrs.PlateCarree())
             selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
             if not selected.empty:
-                selected.plot(ax=ax0, facecolor='none', edgecolor='red', linewidth=1.6, transform=ccrs.PlateCarree())
-            else:
-                ax0.plot(lon_center, lat_center, 'o', color='red', markersize=6, transform=ccrs.PlateCarree())
+                selected.plot(ax=ax0, facecolor='none', edgecolor='red', linewidth=2.0, transform=ccrs.PlateCarree())
         except Exception:
-            ax0.plot(lon_center, lat_center, 'o', color='red', markersize=6, transform=ccrs.PlateCarree())
-    else:
-        ax0.plot(lon_center, lat_center, 'o', color='red', markersize=6, transform=ccrs.PlateCarree())
+            pass
 
-    ax0.set_extent([-58.5, -50.5, -24.0, -17.5], crs=ccrs.PlateCarree())
-    ax0.set_title('Localização no Estado', fontsize=10)
+    # Enfoque no estado do MS (limites aproximados)
+    ax0.set_extent([-58.5, -50.5, -24.5, -17.0], crs=ccrs.PlateCarree())
+    ax0.set_title('Mato Grosso do Sul', fontsize=10)
 
-    # --- Right: Detailed map centered on municipality ---
+    # --- Mapa detalhado: Município ---
     ax1 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
     ax1.add_feature(cfeature.LAND, facecolor='lightgray')
     ax1.add_feature(cfeature.COASTLINE, linewidth=0.4)

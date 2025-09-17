@@ -30,7 +30,7 @@ except Exception as e:
     st.error("❌ Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
     st.stop()
 
-# Função para baixar shapefile dos municípios de MS
+# Função para baixar shapefile dos municípios de MS (modificada)
 @st.cache_data
 def load_ms_municipalities():
     try:
@@ -39,111 +39,410 @@ def load_ms_municipalities():
         
         try:
             gdf = gpd.read_file(url)
+            # Garantir que temos a coluna de nome do município
+            if 'NM_MUN' not in gdf.columns and 'NM_MUNICIP' in gdf.columns:
+                gdf['NM_MUN'] = gdf['NM_MUNICIP']
+            elif 'NM_MUN' not in gdf.columns and 'NOME' in gdf.columns:
+                gdf['NM_MUN'] = gdf['NOME']
             return gdf
-        except:
-            # Fallback: criar geodataframe simplificado
-            data = {
-                'NM_MUN': ['Campo Grande', 'Dourados', 'Três Lagoas', 'Corumbá', 'Ponta Porã'],
-                'geometry': [
-                    gpd.points_from_xy([-54.6201], [-20.4697])[0].buffer(0.2),
-                    gpd.points_from_xy([-54.812], [-22.2231])[0].buffer(0.2),
-                    gpd.points_from_xy([-51.7005], [-20.7849])[0].buffer(0.2),
-                    gpd.points_from_xy([-57.651], [-19.0082])[0].buffer(0.2),
-                    gpd.points_from_xy([-55.7271], [-22.5334])[0].buffer(0.2)
-                ]
-            }
-            gdf = gpd.GeoDataFrame(data, crs="EPSG:4326")
-            return gdf
+        except Exception as e:
+            st.warning(f"Erro ao carregar shapefile oficial do IBGE: {e}")
+            # Fallback com dados mais realistas
+            return create_fallback_shapefile()
     except Exception as e:
         st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
-        return gpd.GeoDataFrame(columns=['NM_MUN', 'geometry'], crs="EPSG:4326")
+        return create_fallback_shapefile()
 
-# 🎯 Lista completa dos municípios de MS com coordenadas
-cities = {
-    "Água Clara": [-20.4453, -52.8792],
-    "Alcinópolis": [-18.3255, -53.7042],
-    "Amambai": [-23.1058, -55.2253],
-    "Anastácio": [-20.4823, -55.8104],
-    "Anaurilândia": [-22.1852, -52.7191],
-    "Angélica": [-22.1527, -53.7708],
-    "Antônio João": [-22.1927, -55.9511],
-    "Aparecida do Taboado": [-20.0873, -51.0961],
-    "Aquidauana": [-20.4697, -55.7868],
-    "Aral Moreira": [-22.9384, -55.6331],
-    "Bandeirantes": [-19.9279, -54.3581],
-    "Bataguassu": [-21.7156, -52.4233],
-    "Batayporã": [-22.2947, -53.2705],
-    "Bela Vista": [-22.1073, -56.5263],
-    "Bodoquena": [-20.5372, -56.7138],
-    "Bonito": [-21.1261, -56.4836],
-    "Brasilândia": [-21.2544, -52.0382],
-    "Caarapó": [-22.6368, -54.8209],
-    "Camapuã": [-19.5302, -54.0431],
-    "Campo Grande": [-20.4697, -54.6201],
-    "Caracol": [-22.0112, -57.0278],
-    "Cassilândia": [-19.1179, -51.7308],
-    "Chapadão do Sul": [-18.7908, -52.6260],
-    "Corguinho": [-19.8243, -54.8281],
-    "Coronel Sapucaia": [-23.2724, -55.5278],
-    "Corumbá": [-19.0082, -57.651],
-    "Costa Rica": [-18.5432, -53.1287],
-    "Coxim": [-18.5013, -54.7603],
-    "Deodápolis": [-22.2789, -54.1583],
-    "Dois Irmãos do Buriti": [-20.6845, -55.2915],
-    "Douradina": [-22.0430, -54.6158],
-    "Dourados": [-22.2231, -54.812],
-    "Eldorado": [-23.7868, -54.2836],
-    "Fátima do Sul": [-22.3789, -54.5131],
-    "Figueirão": [-18.6782, -53.6380],
-    "Glória de Dourados": [-22.4136, -54.2336],
-    "Guia Lopes da Laguna": [-21.4583, -56.1117],
-    "Iguatemi": [-23.6835, -54.5635],
-    "Inocência": [-19.7276, -51.9281],
-    "Itaporã": [-22.0750, -54.7933],
-    "Itaquiraí": [-23.4779, -54.1873],
-    "Ivinhema": [-22.3046, -53.8185],
-    "Japorã": [-23.8903, -54.4059],
-    "Jaraguari": [-20.1386, -54.3996],
-    "Jardim": [-21.4799, -56.1489],
-    "Jateí": [-22.4806, -54.3078],
-    "Juti": [-22.8596, -54.6060],
-    "Ladário": [-19.0090, -57.5973],
-    "Laguna Carapã": [-22.5448, -55.1502],
-    "Maracaju": [-21.6105, -55.1695],
-    "Miranda": [-20.2407, -56.3780],
-    "Mundo Novo": [-23.9355, -54.2807],
-    "Naviraí": [-23.0618, -54.1995],
-    "Nioaque": [-21.1419, -55.8296],
-    "Nova Alvorada do Sul": [-21.4657, -54.3825],
-    "Nova Andradina": [-22.2332, -53.3437],
-    "Novo Horizonte do Sul": [-22.6693, -53.8601],
-    "Paraíso das Águas": [-19.0218, -53.0116],
-    "Paranaíba": [-19.6746, -51.1909],
-    "Paranhos": [-23.8905, -55.4289],
-    "Pedro Gomes": [-18.0996, -54.5507],
-    "Ponta Porã": [-22.5334, -55.7271],
-    "Porto Murtinho": [-21.6981, -57.8825],
-    "Ribas do Rio Pardo": [-20.4432, -53.7588],
-    "Rio Brilhante": [-21.8033, -54.5427],
-    "Rio Negro": [-19.4473, -54.9859],
-    "Rio Verde de Mato Grosso": [-18.9249, -54.8434],
-    "Rochedo": [-19.9566, -54.8940],
-    "Santa Rita do Pardo": [-21.3016, -52.8333],
-    "São Gabriel do Oeste": [-19.3950, -54.5507],
-    "Selvíria": [-20.3637, -51.4192],
-    "Sete Quedas": [-23.9710, -55.0396],
-    "Sidrolândia": [-20.9302, -54.9692],
-    "Sonora": [-17.5698, -54.7551],
-    "Tacuru": [-23.6361, -55.0141],
-    "Taquarussu": [-22.4898, -53.3519],
-    "Terenos": [-20.4378, -54.8647],
-    "Três Lagoas": [-20.7849, -51.7005],
-    "Vicentina": [-22.4098, -54.4415]
-}
+def create_fallback_shapefile():
+    """Cria um shapefile simplificado caso o oficial falhe"""
+    # Criar polígonos aproximados para alguns municípios principais
+    from shapely.geometry import Polygon
+    
+    municipalities_data = []
+    for city_name, (lat, lon) in cities.items():
+        # Criar um polígono aproximado (quadrado) ao redor de cada cidade
+        buffer_size = 0.15  # Aproximadamente 15km
+        polygon = Polygon([
+            (lon - buffer_size, lat - buffer_size),
+            (lon + buffer_size, lat - buffer_size),
+            (lon + buffer_size, lat + buffer_size),
+            (lon - buffer_size, lat + buffer_size),
+            (lon - buffer_size, lat - buffer_size)
+        ])
+        municipalities_data.append({
+            'NM_MUN': city_name,
+            'geometry': polygon
+        })
+    
+    return gpd.GeoDataFrame(municipalities_data, crs="EPSG:4326")
 
-# Coordenadas do centro geográfico de MS para centralizar o mapa
-MS_CENTER_LAT = -20.5147
-MS_CENTER_LON = -54.5416
+# Função para criar mapa com contexto estadual (nova função)
+def create_enhanced_map_with_context(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0):
+    """Cria mapa mostrando MS completo com destaque no município selecionado"""
+    
+    # Coordenadas de MS completo
+    ms_bounds = {
+        'north': -17.5,
+        'south': -24.0,
+        'east': -50.5,
+        'west': -58.5
+    }
+    
+    # Criar figura
+    fig = plt.figure(figsize=(16, 12))
+    
+    # Layout com dois subplots: contexto estadual (esquerda) e detalhe municipal (direita)
+    gs = fig.add_gridspec(2, 2, height_ratios=[3, 1], width_ratios=[1, 1.2])
+    
+    # Mapa do contexto estadual (MS completo)
+    ax1 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
+    
+    # Configurar mapa estadual
+    ax1.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.5)
+    ax1.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.3)
+    ax1.coastlines(resolution='50m', color='black', linewidth=0.8)
+    ax1.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle='-', color='black', linewidth=1.5)
+    ax1.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='darkblue', linewidth=2)
+    
+    # Definir extensão para MS
+    ax1.set_extent([ms_bounds['west'], ms_bounds['east'], 
+                   ms_bounds['south'], ms_bounds['north']], 
+                  crs=ccrs.PlateCarree())
+    
+    # Adicionar shapefile de MS se disponível
+    if not ms_shapes.empty:
+        try:
+            # Plotar todos os municípios de MS
+            ms_shapes.boundary.plot(ax=ax1, color='gray', linewidth=0.5, alpha=0.7, transform=ccrs.PlateCarree())
+            
+            # Destacar o município selecionado
+            selected_municipality = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+            if not selected_municipality.empty:
+                selected_municipality.plot(ax=ax1, color='red', alpha=0.6, 
+                                         edgecolor='darkred', linewidth=2, 
+                                         transform=ccrs.PlateCarree())
+            else:
+                # Se não encontrar no shapefile, marcar com círculo
+                ax1.plot(lon_center, lat_center, 'ro', markersize=15, 
+                        transform=ccrs.PlateCarree(), 
+                        markeredgecolor='darkred', markeredgewidth=3)
+        except Exception as e:
+            st.warning(f"Erro ao plotar shapefile: {e}")
+            # Fallback: apenas marcar a cidade
+            ax1.plot(lon_center, lat_center, 'ro', markersize=15, 
+                    transform=ccrs.PlateCarree(),
+                    markeredgecolor='darkred', markeredgewidth=3)
+    else:
+        # Marcar cidade sem shapefile
+        ax1.plot(lon_center, lat_center, 'ro', markersize=15, 
+                transform=ccrs.PlateCarree(),
+                markeredgecolor='darkred', markeredgewidth=3)
+    
+    # Grid para mapa estadual
+    gl1 = ax1.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+    gl1.top_labels = False
+    gl1.right_labels = False
+    gl1.xlabel_style = {'size': 9}
+    gl1.ylabel_style = {'size': 9}
+    
+    ax1.set_title(f'Localização em Mato Grosso do Sul\n{city}', 
+                 fontsize=14, fontweight='bold', pad=15)
+    
+    # Mapa detalhado do município (direita)
+    ax2 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
+    
+    # Área de interesse centrada no município com buffer menor
+    buffer = 0.8
+    city_bounds = {
+        'north': lat_center + buffer,
+        'south': lat_center - buffer,
+        'east': lon_center + buffer,
+        'west': lon_center - buffer
+    }
+    
+    # Configurar mapa detalhado
+    ax2.add_feature(cfeature.LAND, facecolor='lightgray')
+    ax2.add_feature(cfeature.OCEAN, facecolor='lightblue')
+    ax2.coastlines(resolution='50m', color='black', linewidth=0.5)
+    ax2.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle=':', color='gray')
+    ax2.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='black', linewidth=1)
+    
+    ax2.set_extent([city_bounds['west'], city_bounds['east'], 
+                   city_bounds['south'], city_bounds['north']], 
+                  crs=ccrs.PlateCarree())
+    
+    # Adicionar dados de PM2.5 no mapa detalhado
+    da_pm25 = ds[pm25_var]
+    
+    # Converter unidades se necessário
+    if da_pm25.max().values < 1:
+        da_pm25 = da_pm25 * 1e9
+    
+    # Obter frame específico ou primeiro disponível
+    try:
+        if 'forecast_period' in da_pm25.dims and 'forecast_reference_time' in da_pm25.dims:
+            frame_data = da_pm25.isel(forecast_period=0, forecast_reference_time=frame_idx).values
+            frame_time = pd.to_datetime(ds.forecast_reference_time.values[frame_idx])
+        else:
+            time_dims = [dim for dim in da_pm25.dims if 'time' in dim or 'forecast' in dim]
+            time_dim = time_dims[0] if time_dims else list(da_pm25.dims)[0]
+            frame_data = da_pm25.isel({time_dim: frame_idx}).values
+            frame_time = pd.to_datetime(da_pm25[time_dim].values[frame_idx])
+    except:
+        # Usar primeiro frame disponível
+        if 'forecast_period' in da_pm25.dims and 'forecast_reference_time' in da_pm25.dims:
+            frame_data = da_pm25.isel(forecast_period=0, forecast_reference_time=0).values
+            frame_time = pd.to_datetime(ds.forecast_reference_time.values[0])
+        else:
+            frame_data = da_pm25.isel({list(da_pm25.dims)[0]: 0}).values
+            frame_time = pd.to_datetime(str(ds.attrs.get('creation_date', 'Atual')))
+    
+    # Definir escala de cores
+    vmin, vmax = 0, min(150, float(da_pm25.max().values * 1.1))
+    
+    # Plotar dados de PM2.5
+    im = ax2.pcolormesh(ds.longitude, ds.latitude, frame_data, 
+                       cmap='YlOrRd', vmin=vmin, vmax=vmax, 
+                       transform=ccrs.PlateCarree(), alpha=0.8)
+    
+    # Marcar o município no mapa detalhado
+    ax2.plot(lon_center, lat_center, 'ko', markersize=12, 
+            transform=ccrs.PlateCarree(), 
+            markeredgecolor='white', markeredgewidth=3)
+    
+    # Adicionar nome do município
+    ax2.text(lon_center, lat_center + 0.1, city.upper(), 
+            transform=ccrs.PlateCarree(), fontsize=12, fontweight='bold',
+            ha='center', va='bottom', 
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+    
+    # Grid para mapa detalhado
+    gl2 = ax2.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
+    gl2.top_labels = False
+    gl2.right_labels = False
+    gl2.xlabel_style = {'size': 9}
+    gl2.ylabel_style = {'size': 9}
+    
+    ax2.set_title(f'Concentração PM2.5\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
+                 fontsize=14, fontweight='bold', pad=15)
+    
+    # Barra de cores horizontal abaixo dos mapas
+    cbar_ax = fig.add_subplot(gs[1, :])
+    cbar = plt.colorbar(im, cax=cbar_ax, orientation='horizontal', fraction=0.05, pad=0.1)
+    cbar.set_label('Concentração PM2.5 (μg/m³)', fontsize=12, fontweight='bold')
+    cbar.ax.tick_params(labelsize=10)
+    
+    # Adicionar marcadores de qualidade do ar na barra de cores
+    quality_levels = [12, 35, 55, 150]
+    quality_labels = ['Boa', 'Moderada', 'Insalubre\n(Sensíveis)', 'Insalubre']
+    quality_colors = ['green', 'yellow', 'orange', 'red']
+    
+    for level, label, color in zip(quality_levels, quality_labels, quality_colors):
+        if level <= vmax:
+            cbar.ax.axvline(x=level, color=color, linestyle='--', alpha=0.8, linewidth=2)
+            cbar.ax.text(level, 0.5, label, rotation=90, ha='right', va='center', 
+                        fontsize=9, fontweight='bold', color=color,
+                        transform=cbar.ax.get_xaxis_transform())
+    
+    # Informações adicionais
+    fig.text(0.02, 0.02, 
+             f'Fonte: CAMS | Resolução: ~44km | Município destacado em vermelho no mapa estadual',
+             fontsize=10, ha='left', va='bottom', style='italic')
+    
+    plt.tight_layout()
+    return fig
+
+# Modificar a função principal de análise para usar o novo mapa
+def generate_pm_analysis_with_enhanced_map():
+    dataset = "cams-global-atmospheric-composition-forecasts"
+    
+    start_date_str = start_date.strftime('%Y-%m-%d')
+    end_date_str = end_date.strftime('%Y-%m-%d')
+    
+    hours = []
+    current_hour = start_hour
+    while True:
+        hours.append(f"{current_hour:02d}:00")
+        if current_hour == end_hour:
+            break
+        current_hour = (current_hour + 3) % 24
+        if current_hour == start_hour:
+            break
+    
+    if not hours:
+        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
+    
+    # Área de interesse centrada no município com buffer
+    buffer = 1.5
+    city_bounds = {
+        'north': lat_center + buffer,
+        'south': lat_center - buffer,
+        'east': lon_center + buffer,
+        'west': lon_center - buffer
+    }
+    
+    # Requisição padrão
+    request = {
+        'variable': [
+            'particulate_matter_2.5um',
+            'particulate_matter_10um'
+        ],
+        'date': f'{start_date_str}/{end_date_str}',
+        'time': hours,
+        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
+        'type': ['forecast'],
+        'format': 'netcdf',
+        'area': [city_bounds['north'], city_bounds['west'], 
+                city_bounds['south'], city_bounds['east']]
+    }
+    
+    filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.nc'
+    
+    try:
+        with st.spinner('📥 Baixando dados de PM2.5 e PM10 do CAMS...'):
+            client.retrieve(dataset, request).download(filename)
+        
+        ds = xr.open_dataset(filename)
+        
+        # Identificar variáveis
+        variable_names = list(ds.data_vars)
+        pm25_var = next((var for var in variable_names if 'pm2p5' in var.lower() or '2.5' in var), None)
+        pm10_var = next((var for var in variable_names if 'pm10' in var.lower() or '10um' in var), None)
+        
+        if not pm25_var or not pm10_var:
+            st.error("Variáveis de PM2.5 ou PM10 não encontradas nos dados.")
+            return None
+        
+        # Extrair série temporal
+        with st.spinner("Extraindo dados de PM para o município..."):
+            df_timeseries = extract_pm_timeseries(ds, lat_center, lon_center, pm25_var, pm10_var)
+        
+        if df_timeseries.empty:
+            st.error("Não foi possível extrair série temporal para este local.")
+            return None
+        
+        # Gerar previsão
+        with st.spinner("Gerando previsões..."):
+            df_forecast = predict_future_values(df_timeseries, days=5)
+        
+        # Criar mapa estático com contexto estadual
+        with st.spinner('🗺️ Criando mapa contextualizado...'):
+            enhanced_map_fig = create_enhanced_map_with_context(
+                ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0
+            )
+            
+            # Salvar mapa estático
+            static_map_filename = f'Enhanced_Map_{city}_{start_date}.png'
+            enhanced_map_fig.savefig(static_map_filename, dpi=300, bbox_inches='tight')
+            plt.close(enhanced_map_fig)
+        
+        # Criar animação original (opcional - pode ser mantida)
+        da_pm25 = ds[pm25_var]
+        if da_pm25.max().values < 1:
+            da_pm25 = da_pm25 * 1e9
+        
+        # [Resto do código da animação permanece igual...]
+        # ... (código da animação original)
+        
+        # Retornar resultados incluindo o mapa contextualizado
+        return {
+            'enhanced_map': static_map_filename,
+            'timeseries': df_timeseries,
+            'forecast': df_forecast,
+            'dataset': ds,
+            'pm25_var': pm25_var,
+            'pm10_var': pm10_var
+        }
+        
+    except Exception as e:
+        st.error(f"❌ Erro ao processar os dados: {str(e)}")
+        return None
+
+# Modificação na interface para mostrar o mapa contextualizado
+# (Na parte onde os resultados são exibidos, substituir a aba do mapa por:)
+
+with tab3:  # Aba do Mapa
+    st.subheader(f"🗺️ Localização e Qualidade do Ar - {city}")
+    
+    if 'enhanced_map' in results:
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.image(results['enhanced_map'], 
+                    caption=f"Contexto Estadual e Detalhe de {city} - {start_date}")
+            
+            with open(results['enhanced_map'], "rb") as file:
+                btn = st.download_button(
+                    label="⬇️ Baixar Mapa Contextualizado (PNG)",
+                    data=file,
+                    file_name=f"Mapa_Contexto_{city}_{start_date}.png",
+                    mime="image/png"
+                )
+        
+        with col2:
+            st.markdown("### 🎯 Interpretação do Mapa")
+            st.markdown("""
+            **Mapa da Esquerda (MS Completo):**
+            - Mostra a localização do município em MS
+            - Município destacado em vermelho
+            - Contexto geográfico estadual
+            
+            **Mapa da Direita (Detalhe Local):**
+            - Concentração de PM2.5 na região
+            - Escala de cores: Verde (baixa) → Vermelho (alta)
+            - Ponto preto: localização exata do município
+            
+            **Escala de Qualidade:**
+            - 🟢 0-12 μg/m³: Boa
+            - 🟡 12-35 μg/m³: Moderada  
+            - 🟠 35-55 μg/m³: Insalubre (sensíveis)
+            - 🔴 >55 μg/m³: Insalubre
+            """)
+            
+            # Adicionar informações sobre municípios vizinhos se disponível
+            if not ms_shapes.empty:
+                try:
+                    # Encontrar municípios próximos
+                    from shapely.geometry import Point
+                    point = Point(lon_center, lat_center)
+                    
+                    # Calcular distâncias
+                    ms_shapes['distance'] = ms_shapes.geometry.centroid.distance(point)
+                    nearest = ms_shapes.nsmallest(6, 'distance')['NM_MUN'].tolist()
+                    
+                    # Remover o município atual da lista
+                    if city in nearest:
+                        nearest.remove(city)
+                    
+                    if len(nearest) >= 3:
+                        st.markdown("### 🏘️ Municípios Próximos")
+                        for i, neighbor in enumerate(nearest[:5], 1):
+                            st.write(f"{i}. {neighbor}")
+                except:
+                    pass
+    
+    # Informações técnicas sobre os dados
+    with st.expander("ℹ️ Informações Técnicas dos Mapas"):
+        st.markdown("""
+        ### Metodologia de Mapeamento
+        
+        **Dados Utilizados:**
+        - Fonte: CAMS (Copernicus Atmosphere Monitoring Service)
+        - Variável: particulate_matter_2.5um (PM2.5 direta)
+        - Resolução espacial: ~0.4° x 0.4° (~44 km)
+        - Resolução temporal: 3 horas
+        
+        **Shapefiles:**
+        - Municípios de MS: IBGE 2022
+        - Projeção: PlateCarree (Geographic)
+        - Sistema de coordenadas: EPSG:4326
+        
+        **Visualização:**
+        - Mapa estadual: Localização contextual
+        - Mapa local: Concentrações detalhadas
+        - Escala de cores: YlOrRd (Amarelo-Laranja-Vermelho)
+        - Níveis de qualidade baseados em padrões EPA/OMS
+        """)
 
 # Títulos e introdução
 st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")

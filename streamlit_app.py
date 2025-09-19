@@ -884,310 +884,310 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     )
             
 # Aba de Alertas
-with tab2:
-    st.subheader("⚠️ Sistema de Alerta de Qualidade do Ar")
+    with tab2:
+        st.subheader("⚠️ Sistema de Alerta de Qualidade do Ar")
+        
+        # Análise da situação atual
+        if not df_combined.empty:
+            current_data = df_combined[df_combined['type'] == 'historical']
+            if not current_data.empty:
+                latest_data = current_data.iloc[-1]
+                
+                # Determinar nível de alerta
+                alert_level = "BAIXO"
+                alert_color = "green"
+                recommendations = []
+                
+                if latest_data['aqi'] > 100:
+                    alert_level = "MODERADO"
+                    alert_color = "orange"
+                    recommendations.append("Pessoas sensíveis devem reduzir atividades ao ar livre")
+                if latest_data['aqi'] > 150:
+                    alert_level = "ALTO"
+                    alert_color = "red"
+                    recommendations.append("Toda a população deve evitar atividades ao ar livre prolongadas")
+                if latest_data['aqi'] > 200:
+                    alert_level = "MUITO ALTO"
+                    alert_color = "purple"
+                    recommendations.append("Evitar qualquer atividade ao ar livre")
+                
+                # Display do alerta
+                st.markdown(f"""
+                <div style="padding:20px; border-radius:10px; background-color:{alert_color}; 
+                color:white; text-align:center; margin:10px 0;">
+                <h2 style="margin:0;">NÍVEL DE ALERTA: {alert_level}</h2>
+                <h3 style="margin:5px 0;">IQA: {latest_data['aqi']:.0f} - {latest_data['aqi_category']}</h3>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Detalhes do alerta
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("📊 Concentrações Atuais")
+                    st.metric("PM2.5", f"{latest_data['pm25']:.1f} μg/m³")
+                    st.metric("PM10", f"{latest_data['pm10']:.1f} μg/m³")
+                    
+                    # Comparação com padrões OMS
+                    st.subheader("📏 Comparação com Padrões OMS")
+                    pm25_status = "✅ Dentro" if latest_data['pm25'] <= 25 else "⚠️ Acima"
+                    pm10_status = "✅ Dentro" if latest_data['pm10'] <= 50 else "⚠️ Acima"
+                    
+                    st.write(f"**PM2.5**: {pm25_status} do limite (25 μg/m³)")
+                    st.write(f"**PM10**: {pm10_status} do limite (50 μg/m³)")
+                
+                with col2:
+                    st.subheader("📈 Tendência")
+                    if len(current_data) > 1:
+                        pm25_trend = current_data['pm25'].iloc[-1] - current_data['pm25'].iloc[-2]
+                        pm10_trend = current_data['pm10'].iloc[-1] - current_data['pm10'].iloc[-2]
+                        
+                        trend_icon_25 = "↗️" if pm25_trend > 0 else "↘️" if pm25_trend < 0 else "➡️"
+                        trend_icon_10 = "↗️" if pm10_trend > 0 else "↘️" if pm10_trend < 0 else "➡️"
+                        
+                        st.metric("Tendência PM2.5", f"{pm25_trend:+.1f} μg/m³", delta=None, 
+                                 help=f"{trend_icon_25} Variação desde a última medição")
+                        st.metric("Tendência PM10", f"{pm10_trend:+.1f} μg/m³", delta=None,
+                                 help=f"{trend_icon_10} Variação desde a última medição")
+                    
+                    st.subheader("⏰ Última Atualização")
+                    st.write(latest_data['time'].strftime("%d/%m/%Y %H:%M"))
+                
+                # Recomendações
+                st.subheader("💡 Recomendações")
+                if not recommendations:
+                    st.success("✅ Condições favoráveis. Mantenha atividades normais.")
+                else:
+                    for rec in recommendations:
+                        st.warning(rec)
+                
+                # Informações adicionais para grupos sensíveis
+                if latest_data['aqi'] > 100:
+                    st.info("""
+                    **Grupos sensíveis** incluem:
+                    - Crianças e idosos
+                    - Pessoas com doenças respiratórias ou cardíacas
+                    - Gestantes
+                    - Indivíduos que praticam atividades ao ar livre
+                    """)
+            
+            # Previsão de alertas futuros
+            if not forecast_data.empty:
+                st.subheader("🔮 Previsão de Alertas para os Próximos Dias")
+                
+                # Agrupar por dia
+                forecast_data['date'] = forecast_data['time'].dt.date
+                daily_forecast = forecast_data.groupby('date').agg({
+                    'aqi': 'max',
+                    'aqi_category': lambda x: x.iloc[x.values.argmax()],
+                    'pm25': 'max',
+                    'pm10': 'max'
+                }).reset_index()
+                
+                for _, row in daily_forecast.iterrows():
+                    aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
+                    st.markdown(f"""
+                    <div style="padding:10px; border-radius:5px; background-color:{aqi_color}; 
+                    color:white; margin:5px 0;">
+                    <b>{row['date'].strftime('%d/%m')}:</b> IQA {row['aqi']:.0f} - {row['aqi_category']}
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.warning("Dados insuficientes para gerar alertas.")
     
-    # Análise da situação atual
-    if not df_combined.empty:
-        current_data = df_combined[df_combined['type'] == 'historical']
-        if not current_data.empty:
-            latest_data = current_data.iloc[-1]
+    # Aba de análise detalhada
+    with tab4:
+        st.subheader("📈 Análise Detalhada de Material Particulado")
+        
+        if not df_combined.empty:
+            # Separar dados históricos e previsões
+            hist_data = df_combined[df_combined['type'] == 'historical']
+            forecast_data = df_combined[df_combined['type'] == 'forecast']
             
-            # Determinar nível de alerta
-            alert_level = "BAIXO"
-            alert_color = "green"
-            recommendations = []
-            
-            if latest_data['aqi'] > 100:
-                alert_level = "MODERADO"
-                alert_color = "orange"
-                recommendations.append("Pessoas sensíveis devem reduzir atividades ao ar livre")
-            if latest_data['aqi'] > 150:
-                alert_level = "ALTO"
-                alert_color = "red"
-                recommendations.append("Toda a população deve evitar atividades ao ar livre prolongadas")
-            if latest_data['aqi'] > 200:
-                alert_level = "MUITO ALTO"
-                alert_color = "purple"
-                recommendations.append("Evitar qualquer atividade ao ar livre")
-            
-            # Display do alerta
-            st.markdown(f"""
-            <div style="padding:20px; border-radius:10px; background-color:{alert_color}; 
-            color:white; text-align:center; margin:10px 0;">
-            <h2 style="margin:0;">NÍVEL DE ALERTA: {alert_level}</h2>
-            <h3 style="margin:5px 0;">IQA: {latest_data['aqi']:.0f} - {latest_data['aqi_category']}</h3>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Detalhes do alerta
+            # Estatísticas descritivas
             col1, col2 = st.columns(2)
             
             with col1:
-                st.subheader("📊 Concentrações Atuais")
-                st.metric("PM2.5", f"{latest_data['pm25']:.1f} μg/m³")
-                st.metric("PM10", f"{latest_data['pm10']:.1f} μg/m³")
-                
-                # Comparação com padrões OMS
-                st.subheader("📏 Comparação com Padrões OMS")
-                pm25_status = "✅ Dentro" if latest_data['pm25'] <= 25 else "⚠️ Acima"
-                pm10_status = "✅ Dentro" if latest_data['pm10'] <= 50 else "⚠️ Acima"
-                
-                st.write(f"**PM2.5**: {pm25_status} do limite (25 μg/m³)")
-                st.write(f"**PM10**: {pm10_status} do limite (50 μg/m³)")
+                st.subheader("📊 Estatísticas Descritivas - PM2.5")
+                if not hist_data.empty:
+                    pm25_stats = hist_data['pm25'].describe()
+                    st.write(f"Média: {pm25_stats['mean']:.2f} μg/m³")
+                    st.write(f"Mediana: {pm25_stats['50%']:.2f} μg/m³")
+                    st.write(f"Máximo: {pm25_stats['max']:.2f} μg/m³")
+                    st.write(f"Mínimo: {pm25_stats['min']:.2f} μg/m³")
+                    st.write(f"Desvio Padrão: {pm25_stats['std']:.2f} μg/m³")
             
             with col2:
-                st.subheader("📈 Tendência")
-                if len(current_data) > 1:
-                    pm25_trend = current_data['pm25'].iloc[-1] - current_data['pm25'].iloc[-2]
-                    pm10_trend = current_data['pm10'].iloc[-1] - current_data['pm10'].iloc[-2]
-                    
-                    trend_icon_25 = "↗️" if pm25_trend > 0 else "↘️" if pm25_trend < 0 else "➡️"
-                    trend_icon_10 = "↗️" if pm10_trend > 0 else "↘️" if pm10_trend < 0 else "➡️"
-                    
-                    st.metric("Tendência PM2.5", f"{pm25_trend:+.1f} μg/m³", delta=None, 
-                             help=f"{trend_icon_25} Variação desde a última medição")
-                    st.metric("Tendência PM10", f"{pm10_trend:+.1f} μg/m³", delta=None,
-                             help=f"{trend_icon_10} Variação desde a última medição")
+                st.subheader("📊 Estatísticas Descritivas - PM10")
+                if not hist_data.empty:
+                    pm10_stats = hist_data['pm10'].describe()
+                    st.write(f"Média: {pm10_stats['mean']:.2f} μg/m³")
+                    st.write(f"Mediana: {pm10_stats['50%']:.2f} μg/m³")
+                    st.write(f"Máximo: {pm10_stats['max']:.2f} μg/m³")
+                    st.write(f"Mínimo: {pm10_stats['min']:.2f} μg/m³")
+                    st.write(f"Desvio Padrão: {pm10_stats['std']:.2f} μg/m³")
+            
+            # Gráficos de distribuição
+            st.subheader("📈 Distribuição de Concentrações")
+            
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            
+            if not hist_data.empty:
+                # Histograma PM2.5
+                ax1.hist(hist_data['pm25'], bins=15, alpha=0.7, color='darkblue', edgecolor='black')
+                ax1.axvline(hist_data['pm25'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm25"].mean():.1f}')
+                ax1.axvline(25, color='orange', linestyle=':', label='Limite OMS: 25 μg/m³')
+                ax1.set_xlabel('PM2.5 (μg/m³)')
+                ax1.set_ylabel('Frequência')
+                ax1.set_title('Distribuição de PM2.5')
+                ax1.legend()
+                ax1.grid(True, alpha=0.3)
                 
-                st.subheader("⏰ Última Atualização")
-                st.write(latest_data['time'].strftime("%d/%m/%Y %H:%M"))
-            
-            # Recomendações
-            st.subheader("💡 Recomendações")
-            if not recommendations:
-                st.success("✅ Condições favoráveis. Mantenha atividades normais.")
-            else:
-                for rec in recommendations:
-                    st.warning(rec)
-            
-            # Informações adicionais para grupos sensíveis
-            if latest_data['aqi'] > 100:
-                st.info("""
-                **Grupos sensíveis** incluem:
-                - Crianças e idosos
-                - Pessoas com doenças respiratórias ou cardíacas
-                - Gestantes
-                - Indivíduos que praticam atividades ao ar livre
-                """)
-        
-        # Previsão de alertas futuros
-        if not forecast_data.empty:
-            st.subheader("🔮 Previsão de Alertas para os Próximos Dias")
-            
-            # Agrupar por dia
-            forecast_data['date'] = forecast_data['time'].dt.date
-            daily_forecast = forecast_data.groupby('date').agg({
-                'aqi': 'max',
-                'aqi_category': lambda x: x.iloc[x.values.argmax()],
-                'pm25': 'max',
-                'pm10': 'max'
-            }).reset_index()
-            
-            for _, row in daily_forecast.iterrows():
-                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
-                st.markdown(f"""
-                <div style="padding:10px; border-radius:5px; background-color:{aqi_color}; 
-                color:white; margin:5px 0;">
-                <b>{row['date'].strftime('%d/%m')}:</b> IQA {row['aqi']:.0f} - {row['aqi_category']}
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.warning("Dados insuficientes para gerar alertas.")
-
-# Aba de análise detalhada
-with tab4:
-    st.subheader("📈 Análise Detalhada de Material Particulado")
-    
-    if not df_combined.empty:
-        # Separar dados históricos e previsões
-        hist_data = df_combined[df_combined['type'] == 'historical']
-        forecast_data = df_combined[df_combined['type'] == 'forecast']
-        
-        # Estatísticas descritivas
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📊 Estatísticas Descritivas - PM2.5")
-            if not hist_data.empty:
-                pm25_stats = hist_data['pm25'].describe()
-                st.write(f"Média: {pm25_stats['mean']:.2f} μg/m³")
-                st.write(f"Mediana: {pm25_stats['50%']:.2f} μg/m³")
-                st.write(f"Máximo: {pm25_stats['max']:.2f} μg/m³")
-                st.write(f"Mínimo: {pm25_stats['min']:.2f} μg/m³")
-                st.write(f"Desvio Padrão: {pm25_stats['std']:.2f} μg/m³")
-        
-        with col2:
-            st.subheader("📊 Estatísticas Descritivas - PM10")
-            if not hist_data.empty:
-                pm10_stats = hist_data['pm10'].describe()
-                st.write(f"Média: {pm10_stats['mean']:.2f} μg/m³")
-                st.write(f"Mediana: {pm10_stats['50%']:.2f} μg/m³")
-                st.write(f"Máximo: {pm10_stats['max']:.2f} μg/m³")
-                st.write(f"Mínimo: {pm10_stats['min']:.2f} μg/m³")
-                st.write(f"Desvio Padrão: {pm10_stats['std']:.2f} μg/m³")
-        
-        # Gráficos de distribuição
-        st.subheader("📈 Distribuição de Concentrações")
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-        
-        if not hist_data.empty:
-            # Histograma PM2.5
-            ax1.hist(hist_data['pm25'], bins=15, alpha=0.7, color='darkblue', edgecolor='black')
-            ax1.axvline(hist_data['pm25'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm25"].mean():.1f}')
-            ax1.axvline(25, color='orange', linestyle=':', label='Limite OMS: 25 μg/m³')
-            ax1.set_xlabel('PM2.5 (μg/m³)')
-            ax1.set_ylabel('Frequência')
-            ax1.set_title('Distribuição de PM2.5')
-            ax1.legend()
-            ax1.grid(True, alpha=0.3)
-            
-            # Histograma PM10
-            ax2.hist(hist_data['pm10'], bins=15, alpha=0.7, color='brown', edgecolor='black')
-            ax2.axvline(hist_data['pm10'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm10"].mean():.1f}')
-            ax2.axvline(50, color='orange', linestyle=':', label='Limite OMS: 50 μg/m³')
-            ax2.set_xlabel('PM10 (μg/m³)')
-            ax2.set_ylabel('Frequência')
-            ax2.set_title('Distribuição de PM10')
-            ax2.legend()
-            ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        
-        # Análise de correlação
-        if len(hist_data) > 2:
-            st.subheader("🔍 Correlação entre PM2.5 e PM10")
-            
-            correlation = hist_data['pm25'].corr(hist_data['pm10'])
-            st.metric("Coeficiente de Correlação", f"{correlation:.3f}")
-            
-            # Gráfico de dispersão
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.scatter(hist_data['pm25'], hist_data['pm10'], alpha=0.6)
-            
-            # Linha de tendência
-            z = np.polyfit(hist_data['pm25'], hist_data['pm10'], 1)
-            p = np.poly1d(z)
-            ax.plot(hist_data['pm25'], p(hist_data['pm25']), "r--", alpha=0.8)
-            
-            ax.set_xlabel('PM2.5 (μg/m³)')
-            ax.set_ylabel('PM10 (μg/m³)')
-            ax.set_title(f'Correlação PM2.5 vs PM10 (R = {correlation:.3f})')
-            ax.grid(True, alpha=0.3)
+                # Histograma PM10
+                ax2.hist(hist_data['pm10'], bins=15, alpha=0.7, color='brown', edgecolor='black')
+                ax2.axvline(hist_data['pm10'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm10"].mean():.1f}')
+                ax2.axvline(50, color='orange', linestyle=':', label='Limite OMS: 50 μg/m³')
+                ax2.set_xlabel('PM10 (μg/m³)')
+                ax2.set_ylabel('Frequência')
+                ax2.set_title('Distribuição de PM10')
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
             
             plt.tight_layout()
             st.pyplot(fig)
             
-            # Análise da razão PM2.5/PM10
-            st.subheader("⚖️ Razão PM2.5/PM10")
+            # Análise de correlação
+            if len(hist_data) > 2:
+                st.subheader("🔍 Correlação entre PM2.5 e PM10")
+                
+                correlation = hist_data['pm25'].corr(hist_data['pm10'])
+                st.metric("Coeficiente de Correlação", f"{correlation:.3f}")
+                
+                # Gráfico de dispersão
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.scatter(hist_data['pm25'], hist_data['pm10'], alpha=0.6)
+                
+                # Linha de tendência
+                z = np.polyfit(hist_data['pm25'], hist_data['pm10'], 1)
+                p = np.poly1d(z)
+                ax.plot(hist_data['pm25'], p(hist_data['pm25']), "r--", alpha=0.8)
+                
+                ax.set_xlabel('PM2.5 (μg/m³)')
+                ax.set_ylabel('PM10 (μg/m³)')
+                ax.set_title(f'Correlação PM2.5 vs PM10 (R = {correlation:.3f})')
+                ax.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                
+                # Análise da razão PM2.5/PM10
+                st.subheader("⚖️ Razão PM2.5/PM10")
+                
+                pm_ratio = hist_data['pm25'] / hist_data['pm10']
+                avg_ratio = pm_ratio.mean()
+                
+                st.metric("Razão Média PM2.5/PM10", f"{avg_ratio:.2f}")
+                
+                # Interpretação da razão
+                if avg_ratio > 0.6:
+                    st.info("""
+                    **Interpretação:** Razão alta (>0.6) sugere predominância de fontes antropogênicas:
+                    - Emissões veiculares
+                    - Queima de combustíveis fósseis
+                    - Processos industriais
+                    """)
+                elif avg_ratio > 0.4:
+                    st.info("""
+                    **Interpretação:** Razão moderada (0.4-0.6) sugere mistura de fontes:
+                    - Combinação de fontes naturais e antropogênicas
+                    - Condições atmosféricas variadas
+                    """)
+                else:
+                    st.info("""
+                    **Interpretação:** Razão baixa (<0.4) sugere predominância de fontes naturais:
+                    - Poeira do solo
+                    - Partículas de origem marinha
+                    - Material biológico
+                    """)
             
-            pm_ratio = hist_data['pm25'] / hist_data['pm10']
-            avg_ratio = pm_ratio.mean()
+            # Análise temporal detalhada
+            st.subheader("⏰ Variação Temporal")
             
-            st.metric("Razão Média PM2.5/PM10", f"{avg_ratio:.2f}")
-            
-            # Interpretação da razão
-            if avg_ratio > 0.6:
+            if not hist_data.empty:
+                hist_data['hour'] = hist_data['time'].dt.hour
+                hourly_avg = hist_data.groupby('hour').agg({
+                    'pm25': 'mean',
+                    'pm10': 'mean'
+                }).reset_index()
+                
+                fig, ax = plt.subplots(figsize=(12, 6))
+                ax.plot(hourly_avg['hour'], hourly_avg['pm25'], 'o-', label='PM2.5', color='darkblue')
+                ax.plot(hourly_avg['hour'], hourly_avg['pm10'], 's-', label='PM10', color='brown')
+                
+                ax.set_xlabel('Hora do Dia')
+                ax.set_ylabel('Concentração Média (μg/m³)')
+                ax.set_title('Variação Horária Média das Concentrações')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                ax.set_xticks(range(0, 24, 3))
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+                
+                # Explicação dos padrões horários
                 st.info("""
-                **Interpretação:** Razão alta (>0.6) sugere predominância de fontes antropogênicas:
-                - Emissões veiculares
-                - Queima de combustíveis fósseis
-                - Processos industriais
+                **Padrões horários típicos:**
+                - **Manhã (6-9h):** Pico devido às emissões veiculares e condições meteorológicas
+                - **Meio-dia (12-14h):** Redução devido à dispersão por convecção térmica
+                - **Tarde/noite (17-20h):** Segundo pico devido ao tráfego e estabilização atmosférica
+                - **Madrugada (0-5h):** Valores geralmente mais baixos
                 """)
-            elif avg_ratio > 0.4:
-                st.info("""
-                **Interpretação:** Razão moderada (0.4-0.6) sugere mistura de fontes:
-                - Combinação de fontes naturais e antropogênicas
-                - Condições atmosféricas variadas
+            
+            # Comparação com padrões internacionais
+            st.subheader("🌍 Comparação com Padrões Internacionais")
+            
+            standards_data = {
+                'Organização': ['OMS', 'EPA', 'CONAMA', 'UE'],
+                'PM2.5 (24h)': [25, 35, 60, 25],
+                'PM10 (24h)': [50, 150, 150, 50]
+            }
+            
+            standards_df = pd.DataFrame(standards_data)
+            
+            if not hist_data.empty:
+                # Adicionar colunas de comparação
+                latest_pm25 = hist_data['pm25'].iloc[-1]
+                latest_pm10 = hist_data['pm10'].iloc[-1]
+                
+                standards_df['Status PM2.5'] = standards_df['PM2.5 (24h)'].apply(
+                    lambda x: '✅' if latest_pm25 <= x else '⚠️'
+                )
+                standards_df['Status PM10'] = standards_df['PM10 (24h)'].apply(
+                    lambda x: '✅' if latest_pm10 <= x else '⚠️'
+                )
+            
+            st.dataframe(standards_df, use_container_width=True)
+            
+            # Informações adicionais
+            with st.expander("📋 Legenda e Informações Adicionais"):
+                st.markdown("""
+                **Legenda:**
+                - ✅: Dentro do limite
+                - ⚠️: Acima do limite
+                
+                **Notas:**
+                - **OMS:** Organização Mundial da Saúde
+                - **EPA:** Agência de Proteção Ambiental dos EUA
+                - **CONAMA:** Conselho Nacional do Meio Ambiente (Brasil)
+                - **UE:** União Europeia
+                
+                **Observação:** Os limites são para médias de 24 horas. Valores instantâneos podem variar.
                 """)
-            else:
-                st.info("""
-                **Interpretação:** Razão baixa (<0.4) sugere predominância de fontes naturais:
-                - Poeira do solo
-                - Partículas de origem marinha
-                - Material biológico
-                """)
-        
-        # Análise temporal detalhada
-        st.subheader("⏰ Variação Temporal")
-        
-        if not hist_data.empty:
-            hist_data['hour'] = hist_data['time'].dt.hour
-            hourly_avg = hist_data.groupby('hour').agg({
-                'pm25': 'mean',
-                'pm10': 'mean'
-            }).reset_index()
-            
-            fig, ax = plt.subplots(figsize=(12, 6))
-            ax.plot(hourly_avg['hour'], hourly_avg['pm25'], 'o-', label='PM2.5', color='darkblue')
-            ax.plot(hourly_avg['hour'], hourly_avg['pm10'], 's-', label='PM10', color='brown')
-            
-            ax.set_xlabel('Hora do Dia')
-            ax.set_ylabel('Concentração Média (μg/m³)')
-            ax.set_title('Variação Horária Média das Concentrações')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            ax.set_xticks(range(0, 24, 3))
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-            
-            # Explicação dos padrões horários
-            st.info("""
-            **Padrões horários típicos:**
-            - **Manhã (6-9h):** Pico devido às emissões veiculares e condições meteorológicas
-            - **Meio-dia (12-14h):** Redução devido à dispersão por convecção térmica
-            - **Tarde/noite (17-20h):** Segundo pico devido ao tráfego e estabilização atmosférica
-            - **Madrugada (0-5h):** Valores geralmente mais baixos
-            """)
-        
-        # Comparação com padrões internacionais
-        st.subheader("🌍 Comparação com Padrões Internacionais")
-        
-        standards_data = {
-            'Organização': ['OMS', 'EPA', 'CONAMA', 'UE'],
-            'PM2.5 (24h)': [25, 35, 60, 25],
-            'PM10 (24h)': [50, 150, 150, 50]
-        }
-        
-        standards_df = pd.DataFrame(standards_data)
-        
-        if not hist_data.empty:
-            # Adicionar colunas de comparação
-            latest_pm25 = hist_data['pm25'].iloc[-1]
-            latest_pm10 = hist_data['pm10'].iloc[-1]
-            
-            standards_df['Status PM2.5'] = standards_df['PM2.5 (24h)'].apply(
-                lambda x: '✅' if latest_pm25 <= x else '⚠️'
-            )
-            standards_df['Status PM10'] = standards_df['PM10 (24h)'].apply(
-                lambda x: '✅' if latest_pm10 <= x else '⚠️'
-            )
-        
-        st.dataframe(standards_df, use_container_width=True)
-        
-        # Informações adicionais
-        with st.expander("📋 Legenda e Informações Adicionais"):
-            st.markdown("""
-            **Legenda:**
-            - ✅: Dentro do limite
-            - ⚠️: Acima do limite
-            
-            **Notas:**
-            - **OMS:** Organização Mundial da Saúde
-            - **EPA:** Agência de Proteção Ambiental dos EUA
-            - **CONAMA:** Conselho Nacional do Meio Ambiente (Brasil)
-            - **UE:** União Europeia
-            
-            **Observação:** Os limites são para médias de 24 horas. Valores instantâneos podem variar.
-            """)
-    else:
-        st.warning("Dados insuficientes para análise detalhada.")
-            
-    except Exception as e:
-        st.error(f"❌ Erro durante a análise: {str(e)}")
+        else:
+            st.warning("Dados insuficientes para análise detalhada.")
+                
+        except Exception as e:
+            st.error(f"❌ Erro durante a análise: {str(e)}")
 
 # Rodapé informativo
 st.markdown("---")
@@ -1207,3 +1207,4 @@ st.markdown("""
 
 **Aviso:** Este sistema é uma ferramenta de apoio à decisão e não substitui monitoramento oficial.
 """)
+

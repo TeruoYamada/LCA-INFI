@@ -30,29 +30,7 @@ except Exception as e:
     st.error("❌ Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
     st.stop()
 
-# Função para baixar shapefile dos municípios de MS (modificada)
-@st.cache_data
-def load_ms_municipalities():
-    try:
-        url = "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/" + \
-              "municipio_2022/UFs/MS/MS_Municipios_2022.zip"
-        
-        try:
-            gdf = gpd.read_file(url)
-            # Garantir que temos a coluna de nome do município
-            if 'NM_MUN' not in gdf.columns and 'NM_MUNICIP' in gdf.columns:
-                gdf['NM_MUN'] = gdf['NM_MUNICIP']
-            elif 'NM_MUN' not in gdf.columns and 'NOME' in gdf.columns:
-                gdf['NM_MUN'] = gdf['NOME']
-            return gdf
-        except Exception as e:
-            st.warning(f"Erro ao carregar shapefile oficial do IBGE: {e}")
-            # Fallback com dados mais realistas
-            return create_fallback_shapefile()
-    except Exception as e:
-        st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
-        return create_fallback_shapefile()
-
+# Dicionário de coordenadas dos municípios de MS
 cities = {
     "Água Clara": [-20.4453, -52.8792],
     "Alcinópolis": [-18.3255, -53.7042],
@@ -135,10 +113,9 @@ cities = {
     "Vicentina": [-22.4098, -54.4415]
 }
 
-
+# Função para criar shapefile simplificado
 def create_fallback_shapefile():
     """Cria um shapefile simplificado caso o oficial falhe"""
-    # Criar polígonos aproximados para alguns municípios principais
     from shapely.geometry import Polygon
     
     municipalities_data = []
@@ -159,243 +136,27 @@ def create_fallback_shapefile():
     
     return gpd.GeoDataFrame(municipalities_data, crs="EPSG:4326")
 
-# Função para criar mapa com contexto estadual (nova função)
-
-def plot_municipality_with_shape(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0,
-                                figsize=(12,8), buffer_km_deg=0.8):
-    """Cria um mapa com:
-       - Contexto: Estado de Mato Grosso do Sul (lado esquerdo)
-       - Detalhe: município escolhido com contorno (lado direito)
-       O título com o nome do município fica acima da figura.
-    """
-
-    import matplotlib.pyplot as plt
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    import numpy as np
-
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.3], wspace=0.12)
-
-    # --- Mapa de contexto: Mato Grosso do Sul ---
-    ax0 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
-    ax0.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.6)
-    ax0.add_feature(cfeature.COASTLINE, linewidth=0.5)
-    ax0.add_feature(cfeature.BORDERS, linewidth=0.5)
-
-    if ms_shapes is not None and not ms_shapes.empty:
+# Função para carregar shapefiles dos municípios
+@st.cache_data
+def load_ms_municipalities():
+    try:
+        url = "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/" + \
+              "municipio_2022/UFs/MS/MS_Municipios_2022.zip"
+        
         try:
-            ms_shapes.boundary.plot(ax=ax0, color='gray', linewidth=0.5, transform=ccrs.PlateCarree())
-            selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
-            if not selected.empty:
-                selected.plot(ax=ax0, facecolor='none', edgecolor='red', linewidth=2.0, transform=ccrs.PlateCarree())
-        except Exception:
-            pass
-
-    # Enfoque no estado do MS (limites aproximados)
-    ax0.set_extent([-58.5, -50.5, -24.5, -17.0], crs=ccrs.PlateCarree())
-    ax0.set_title('Mato Grosso do Sul', fontsize=10)
-
-    # --- Mapa detalhado: Município ---
-    ax1 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
-    ax1.add_feature(cfeature.LAND, facecolor='lightgray')
-    ax1.add_feature(cfeature.COASTLINE, linewidth=0.4)
-    ax1.add_feature(cfeature.BORDERS, linestyle=':', linewidth=0.4)
-
-    buffer = buffer_km_deg
-    ax1.set_extent([lon_center - buffer, lon_center + buffer, lat_center - buffer, lat_center + buffer], crs=ccrs.PlateCarree())
-
-    try:
-        da = ds[pm25_var]
-        if 'forecast_reference_time' in da.dims and 'forecast_period' in da.dims:
-            frame = da.isel(forecast_reference_time=0, forecast_period=frame_idx).values
-        else:
-            time_dims = [d for d in da.dims if 'time' in d or 'forecast' in d]
-            td = time_dims[0] if time_dims else da.dims[0]
-            frame = da.isel({td: frame_idx}).values
-
-        vmin, vmax = np.nanmin(frame), np.nanpercentile(frame, 97)
-        im = ax1.pcolormesh(ds.longitude, ds.latitude, frame, cmap='YlOrRd',
-                            vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), alpha=0.85)
-    except Exception:
-        im = None
-
-    if ms_shapes is not None and not ms_shapes.empty:
-        selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
-        if not selected.empty:
-            try:
-                selected.plot(ax=ax1, facecolor='none', edgecolor='red', linewidth=2.0, transform=ccrs.PlateCarree())
-            except Exception:
-                pass
-
-    ax1.plot(lon_center, lat_center, marker='o', markersize=8,
-             markeredgecolor='white', markerfacecolor='black', transform=ccrs.PlateCarree())
-
-    fig.suptitle(f"{city.upper()}", fontsize=16, fontweight='bold', y=0.98)
-
-    try:
-        if im is not None and 'frame_time' in locals():
-            ax1.set_title(f"{frame_time.strftime('%d/%m/%Y %H:%M UTC')}", fontsize=10)
-        elif im is not None:
-            ax1.set_title('', fontsize=10)
-    except Exception:
-        ax1.set_title('', fontsize=10)
-
-    if im is not None:
-        cax = fig.add_axes([0.62, 0.07, 0.28, 0.03])
-        cb = plt.colorbar(im, cax=cax, orientation='horizontal')
-        cb.set_label('Concentração PM2.5 (μg/m³)')
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    return fig
-
-
-# Modificar a função principal de análise para usar o novo mapa
-def generate_pm_analysis_with_enhanced_map():
-    dataset = "cams-global-atmospheric-composition-forecasts"
-    
-    start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_str = end_date.strftime('%Y-%m-%d')
-    
-    hours = []
-    current_hour = start_hour
-    while True:
-        hours.append(f"{current_hour:02d}:00")
-        if current_hour == end_hour:
-            break
-        current_hour = (current_hour + 3) % 24
-        if current_hour == start_hour:
-            break
-    
-    if not hours:
-        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
-    
-    # Área de interesse centrada no município com buffer
-    buffer = 1.5
-    city_bounds = {
-        'north': lat_center + buffer,
-        'south': lat_center - buffer,
-        'east': lon_center + buffer,
-        'west': lon_center - buffer
-    }
-    
-    # Requisição padrão
-    request = {
-        'variable': [
-            'particulate_matter_2.5um',
-            'particulate_matter_10um'
-        ],
-        'date': f'{start_date_str}/{end_date_str}',
-        'time': hours,
-        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
-        'type': ['forecast'],
-        'format': 'netcdf',
-        'area': [city_bounds['north'], city_bounds['west'], 
-                city_bounds['south'], city_bounds['east']]
-    }
-    
-    filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.nc'
-    
-    try:
-        with st.spinner('📥 Baixando dados de PM2.5 e PM10 do CAMS...'):
-            client.retrieve(dataset, request).download(filename)
-        
-        ds = xr.open_dataset(filename)
-        
-        # Identificar variáveis
-        variable_names = list(ds.data_vars)
-        pm25_var = next((var for var in variable_names if 'pm2p5' in var.lower() or '2.5' in var), None)
-        pm10_var = next((var for var in variable_names if 'pm10' in var.lower() or '10um' in var), None)
-        
-        if not pm25_var or not pm10_var:
-            st.error("Variáveis de PM2.5 ou PM10 não encontradas nos dados.")
-            return None
-        
-        # Extrair série temporal
-        with st.spinner("Extraindo dados de PM para o município..."):
-            df_timeseries = extract_pm_timeseries(ds, lat_center, lon_center, pm25_var, pm10_var)
-        
-        if df_timeseries.empty:
-            st.error("Não foi possível extrair série temporal para este local.")
-            return None
-        
-        # Gerar previsão
-        with st.spinner("Gerando previsões..."):
-            df_forecast = predict_future_values(df_timeseries, days=5)
-        
-        # Criar mapa estático com contexto estadual
-        with st.spinner('🗺️ Criando mapa contextualizado...'):
-            enhanced_map_fig = create_enhanced_map_with_context(
-                ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0
-            )
-            
-            # Salvar mapa estático
-            static_map_filename = f'Enhanced_Map_{city}_{start_date}.png'
-            enhanced_map_fig.savefig(static_map_filename, dpi=300, bbox_inches='tight')
-            plt.close(enhanced_map_fig)
-        
-        # Criar animação original (opcional - pode ser mantida)
-        da_pm25 = ds[pm25_var]
-        if da_pm25.max().values < 1:
-            da_pm25 = da_pm25 * 1e9
-        
-        # [Resto do código da animação permanece igual...]
-        # ... (código da animação original)
-        
-        # Retornar resultados incluindo o mapa contextualizado
-        return {
-            'enhanced_map': static_map_filename,
-            'timeseries': df_timeseries,
-            'forecast': df_forecast,
-            'dataset': ds,
-            'pm25_var': pm25_var,
-            'pm10_var': pm10_var
-        }
-        
+            gdf = gpd.read_file(url)
+            # Garantir que temos a coluna de nome do município
+            if 'NM_MUN' not in gdf.columns and 'NM_MUNICIP' in gdf.columns:
+                gdf['NM_MUN'] = gdf['NM_MUNICIP']
+            elif 'NM_MUN' not in gdf.columns and 'NOME' in gdf.columns:
+                gdf['NM_MUN'] = gdf['NOME']
+            return gdf
+        except Exception as e:
+            st.warning(f"Erro ao carregar shapefile oficial do IBGE: {e}")
+            return create_fallback_shapefile()
     except Exception as e:
-        st.error(f"❌ Erro ao processar os dados: {str(e)}")
-        return None
-
-# Modificação na interface para mostrar o mapa contextualizado
-# (Na parte onde os resultados são exibidos, substituir a aba do mapa por:)
-    
-    # Informações técnicas sobre os dados
-    with st.expander("ℹ️ Informações Técnicas dos Mapas"):
-        st.markdown("""
-        ### Metodologia de Mapeamento
-        
-        **Dados Utilizados:**
-        - Fonte: CAMS (Copernicus Atmosphere Monitoring Service)
-        - Variável: particulate_matter_2.5um (PM2.5 direta)
-        - Resolução espacial: ~0.4° x 0.4° (~44 km)
-        - Resolução temporal: 3 horas
-        
-        **Shapefiles:**
-        - Municípios de MS: IBGE 2022
-        - Projeção: PlateCarree (Geographic)
-        - Sistema de coordenadas: EPSG:4326
-        
-        **Visualização:**
-        - Mapa estadual: Localização contextual
-        - Mapa local: Concentrações detalhadas
-        - Escala de cores: YlOrRd (Amarelo-Laranja-Vermelho)
-        - Níveis de qualidade baseados em padrões EPA/OMS
-        """)
-
-# Títulos e introdução
-st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
-st.markdown("""
-### Sistema Integrado de Monitoramento da Qualidade do Ar
-
-Este aplicativo monitora diretamente as concentrações de Material Particulado (PM2.5 e PM10) 
-para todos os municípios de Mato Grosso do Sul usando dados diretos do CAMS.
-
-**Características desta versão:**
-- 📊 Dados diretos de PM2.5 e PM10 do CAMS (sem conversão de AOD)
-- 🎯 Visualização centralizada no município selecionado
-- 📈 Índice de Qualidade do Ar (IQA) calculado
-- 🔮 Previsões para os próximos 5 dias
-""")
+        st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
+        return create_fallback_shapefile()
 
 # Função para calcular IQA (Índice de Qualidade do Ar)
 def calculate_aqi(pm25, pm10):
@@ -604,61 +365,104 @@ def predict_future_values(df, days=5):
     result = pd.concat([df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']], df_pred], ignore_index=True)
     return result
 
-# Função para analisar todas as cidades
-def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
-    """Analisa os valores de PM2.5 e PM10 para todas as cidades."""
-    cities_results = []
+# Função para criar mapa com contexto estadual
+def create_enhanced_map_with_context(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0, figsize=(14, 8)):
+    """Cria um mapa com contexto estadual e foco no município selecionado."""
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.5], wspace=0.1)
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # Mapa de contexto: Mato Grosso do Sul
+    ax0 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
+    ax0.set_extent([-58.5, -50.5, -24.5, -17.0], crs=ccrs.PlateCarree())
     
-    for i, (city_name, coords) in enumerate(cities_dict.items()):
-        progress = (i + 1) / len(cities_dict)
-        progress_bar.progress(progress)
-        status_text.text(f"Analisando {city_name}... ({i+1}/{len(cities_dict)})")
-        
-        lat, lon = coords
-        
-        df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)
-        
-        if not df_timeseries.empty:
-            df_forecast = predict_future_values(df_timeseries, days=5)
-            
-            forecast_only = df_forecast[df_forecast['type'] == 'forecast']
-            
-            if not forecast_only.empty:
-                max_pm25 = forecast_only['pm25'].max()
-                max_pm10 = forecast_only['pm10'].max()
-                max_aqi = forecast_only['aqi'].max()
-                
-                max_day_idx = forecast_only['aqi'].idxmax()
-                max_day = forecast_only.loc[max_day_idx, 'time']
-                max_category = forecast_only.loc[max_day_idx, 'aqi_category']
-                
-                cities_results.append({
-                    'cidade': city_name,
-                    'pm25_max': max_pm25,
-                    'pm10_max': max_pm10,
-                    'aqi_max': max_aqi,
-                    'data_max': max_day,
-                    'categoria': max_category
-                })
+    # Adicionar características do mapa
+    ax0.add_feature(cfeature.STATES.with_scale('50m'), linewidth=0.8, edgecolor='gray')
+    ax0.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.5)
+    ax0.add_feature(cfeature.BORDERS.with_scale('50m'), linewidth=0.5)
     
-    progress_bar.empty()
-    status_text.empty()
+    # Adicionar shapefile do MS
+    if ms_shapes is not None and not ms_shapes.empty:
+        ms_shapes.boundary.plot(ax=ax0, color='gray', linewidth=0.5, transform=ccrs.PlateCarree())
+        
+        # Destacar o município selecionado
+        selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+        if not selected.empty:
+            selected.plot(ax=ax0, facecolor='red', edgecolor='darkred', linewidth=2.0, 
+                         alpha=0.5, transform=ccrs.PlateCarree())
     
-    if cities_results:
-        df_results = pd.DataFrame(cities_results)
-        df_results = df_results.sort_values('aqi_max', ascending=False).reset_index(drop=True)
+    ax0.set_title('Mato Grosso do Sul - Contexto', fontsize=12, pad=10)
+    
+    # Mapa detalhado: Município selecionado
+    ax1 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
+    
+    # Definir extensão com buffer ao redor do município
+    buffer = 0.8
+    ax1.set_extent([lon_center - buffer, lon_center + buffer, 
+                   lat_center - buffer, lat_center + buffer], crs=ccrs.PlateCarree())
+    
+    # Adicionar características do mapa
+    ax1.add_feature(cfeature.STATES.with_scale('50m'), linewidth=0.8, edgecolor='gray')
+    ax1.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.5)
+    ax1.add_feature(cfeature.BORDERS.with_scale('50m'), linewidth=0.5)
+    
+    # Plotar dados de PM2.5
+    try:
+        da = ds[pm25_var]
+        if 'forecast_reference_time' in da.dims and 'forecast_period' in da.dims:
+            frame = da.isel(forecast_reference_time=0, forecast_period=frame_idx).values
+            frame_time = pd.to_datetime(ds.forecast_reference_time.values[0]) + pd.to_timedelta(
+                ds.forecast_period.values[frame_idx], unit='h')
+        else:
+            time_dims = [d for d in da.dims if 'time' in d or 'forecast' in d]
+            td = time_dims[0] if time_dims else da.dims[0]
+            frame = da.isel({td: frame_idx}).values
+            frame_time = pd.to_datetime(da[td].values[frame_idx])
         
-        df_results['pm25_max'] = df_results['pm25_max'].round(1)
-        df_results['pm10_max'] = df_results['pm10_max'].round(1)
-        df_results['aqi_max'] = df_results['aqi_max'].round(0)
-        df_results['data_max'] = df_results['data_max'].dt.strftime('%d/%m/%Y %H:%M')
+        # Converter unidades se necessário
+        if np.nanmax(frame) < 1:
+            frame = frame * 1e9  # Converter de kg/m³ para μg/m³
         
-        return df_results
-    else:
-        return pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
+        vmin, vmax = 0, np.nanpercentile(frame, 95)
+        im = ax1.pcolormesh(ds.longitude, ds.latitude, frame, cmap='YlOrRd',
+                           vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), alpha=0.8)
+    except Exception as e:
+        st.warning(f"Erro ao plotar dados de PM2.5: {str(e)}")
+        im = None
+    
+    # Adicionar contorno do município selecionado
+    if ms_shapes is not None and not ms_shapes.empty:
+        selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+        if not selected.empty:
+            selected.boundary.plot(ax=ax1, color='red', linewidth=3.0, transform=ccrs.PlateCarree())
+    
+    # Adicionar ponto central do município
+    ax1.plot(lon_center, lat_center, marker='o', markersize=10,
+             markeredgecolor='white', markerfacecolor='blue', transform=ccrs.PlateCarree())
+    
+    # Adicionar grid e labels
+    gl = ax1.gridlines(draw_labels=True, linestyle='--', alpha=0.7)
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    # Título principal
+    fig.suptitle(f"Monitoramento de PM2.5 - {city.upper()}", fontsize=16, fontweight='bold', y=0.95)
+    
+    # Subtítulo com data/hora
+    if 'frame_time' in locals():
+        ax1.set_title(f"{frame_time.strftime('%d/%m/%Y %H:%M UTC')}", fontsize=10)
+    
+    # Adicionar barra de cores
+    if im is not None:
+        cax = fig.add_axes([0.82, 0.15, 0.02, 0.3])
+        cb = plt.colorbar(im, cax=cax)
+        cb.set_label('PM2.5 (μg/m³)', fontsize=10)
+    
+    # Adicionar legenda informativa
+    ax0.text(0.5, -0.1, "Mapa de contexto mostrando a localização\ndo município selecionado em Mato Grosso do Sul", 
+             transform=ax0.transAxes, ha='center', fontsize=9, style='italic')
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    return fig
 
 # Função principal para análise de PM2.5 e PM10
 def generate_pm_analysis():
@@ -667,6 +471,7 @@ def generate_pm_analysis():
     start_date_str = start_date.strftime('%Y-%m-%d')
     end_date_str = end_date.strftime('%Y-%m-%d')
     
+    # Gerar lista de horas para a requisição
     hours = []
     current_hour = start_hour
     while True:
@@ -734,6 +539,17 @@ def generate_pm_analysis():
         with st.spinner("Gerando previsões..."):
             df_forecast = predict_future_values(df_timeseries, days=5)
         
+        # Criar mapa estático com contexto estadual
+        with st.spinner('🗺️ Criando mapa contextualizado...'):
+            enhanced_map_fig = create_enhanced_map_with_context(
+                ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0
+            )
+            
+            # Salvar mapa estático
+            static_map_filename = f'Enhanced_Map_{city}_{start_date}.png'
+            enhanced_map_fig.savefig(static_map_filename, dpi=300, bbox_inches='tight')
+            plt.close(enhanced_map_fig)
+        
         # Criar animação para PM2.5
         da_pm25 = ds[pm25_var]
         
@@ -759,15 +575,13 @@ def generate_pm_analysis():
         vmax = min(200, vmax + 10)
         
         # Criar figura para animação PM2.5
-        fig = plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(12, 10))
         ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
         
         # Adicionar features do mapa
-        ax.add_feature(cfeature.LAND, facecolor='lightgray')
-        ax.add_feature(cfeature.OCEAN, facecolor='lightblue')
-        ax.coastlines(resolution='50m', color='black', linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS.with_scale('50m'), linestyle=':', color='gray')
-        ax.add_feature(cfeature.STATES.with_scale('50m'), linestyle='-', edgecolor='black', linewidth=1)
+        ax.add_feature(cfeature.STATES.with_scale('50m'), linewidth=0.8, edgecolor='gray')
+        ax.add_feature(cfeature.COASTLINE.with_scale('50m'), linewidth=0.5)
+        ax.add_feature(cfeature.BORDERS.with_scale('50m'), linewidth=0.5)
         
         # Grid
         gl = ax.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.5, linestyle='--')
@@ -779,15 +593,15 @@ def generate_pm_analysis():
                       city_bounds['south'], city_bounds['north']], 
                      crs=ccrs.PlateCarree())
         
-        # Título com o nome do município
-        ax.text(lon_center, city_bounds['north'] + 0.1, city.upper(), 
-                transform=ccrs.PlateCarree(), fontsize=18, fontweight='bold',
-                ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.5', 
-                facecolor='white', alpha=0.8))
+        # Adicionar contorno do município
+        if ms_shapes is not None and not ms_shapes.empty:
+            selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+            if not selected.empty:
+                selected.boundary.plot(ax=ax, color='red', linewidth=2.5, transform=ccrs.PlateCarree())
         
         # Marcar o município selecionado
-        ax.plot(lon_center, lat_center, 'ro', markersize=12, transform=ccrs.PlateCarree(), 
-                label=city, markeredgecolor='white', markeredgewidth=2)
+        ax.plot(lon_center, lat_center, 'ro', markersize=10, transform=ccrs.PlateCarree(), 
+                markeredgecolor='white', markeredgewidth=2)
         
         # Obter primeiro frame
         if 'forecast_period' in da_pm25.dims and 'forecast_reference_time' in da_pm25.dims:
@@ -817,11 +631,12 @@ def generate_pm_analysis():
                 frame_time = None
                 
                 if 'forecast_period' in da_pm25.dims and 'forecast_reference_time' in da_pm25.dims:
-                    fp_idx = min(0, len(da_pm25.forecast_period)-1)
-                    frt_idx = min(i, len(da_pm25.forecast_reference_time)-1)
+                    fp_idx = min(i, len(da_pm25.forecast_period)-1)
+                    frt_idx = min(0, len(da_pm25.forecast_reference_time)-1)
                     
                     frame_data = da_pm25.isel(forecast_period=fp_idx, forecast_reference_time=frt_idx).values
-                    frame_time = pd.to_datetime(ds.forecast_reference_time.values[frt_idx])
+                    frame_time = pd.to_datetime(ds.forecast_reference_time.values[frt_idx]) + pd.to_timedelta(
+                        da_pm25.forecast_period.values[fp_idx], unit='h')
                 else:
                     t_idx = min(i, len(da_pm25[time_dim])-1)
                     frame_data = da_pm25.isel({time_dim: t_idx}).values
@@ -832,11 +647,10 @@ def generate_pm_analysis():
                 
                 return [im, title]
             except Exception as e:
-                st.error(f"Erro no frame {i}: {str(e)}")
                 return [im, title]
         
         # Limitar número de frames
-        actual_frames = min(frames, 20)
+        actual_frames = min(frames, 24)
         
         # Criar animação
         ani = animation.FuncAnimation(fig, animate, frames=actual_frames, 
@@ -849,66 +663,36 @@ def generate_pm_analysis():
             ani.save(gif_filename, writer=animation.PillowWriter(fps=2))
         
         plt.close(fig)
-
-        # Analisar todas as cidades (usando dados de MS completo se disponível)
-        top_pollution_cities = None
-        try:
-            # Para análise de todas as cidades, usar coordenadas completas de MS
-            ms_bounds = {
-                'north': -17.5,
-                'south': -24.0,
-                'east': -50.5,
-                'west': -58.5
-            }
-            
-            # Requisitar dados de MS completo para análise das cidades
-            request_ms = {
-                'variable': [
-                    'particulate_matter_2.5um',
-                    'particulate_matter_10um'
-                ],
-                'date': f'{start_date_str}/{end_date_str}',
-                'time': hours,
-                'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
-                'type': ['forecast'],
-                'format': 'netcdf',
-                'area': [ms_bounds['north'], ms_bounds['west'], 
-                        ms_bounds['south'], ms_bounds['east']]
-            }
-            
-            filename_ms = f'PM25_PM10_MS_complete_{start_date}_to_{end_date}.nc'
-            
-            with st.spinner("🔍 Baixando dados de MS completo para análise das cidades..."):
-                client.retrieve(dataset, request_ms).download(filename_ms)
-            
-            ds_ms = xr.open_dataset(filename_ms)
-            
-            # Converter unidades se necessário
-            if ds_ms[pm25_var].max().values < 1:
-                ds_ms[pm25_var] = ds_ms[pm25_var] * 1e9
-                ds_ms[pm10_var] = ds_ms[pm10_var] * 1e9
-            
-            with st.spinner("🔍 Analisando qualidade do ar em todos os municípios de MS..."):
-                top_pollution_cities = analyze_all_cities(ds_ms, pm25_var, pm10_var, cities)
-        except Exception as e:
-            st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
-            top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
         
         return {
             'animation': gif_filename,
+            'static_map': static_map_filename,
             'timeseries': df_timeseries,
             'forecast': df_forecast,
             'dataset': ds,
             'pm25_var': pm25_var,
-            'pm10_var': pm10_var,
-            'top_pollution': top_pollution_cities
+            'pm10_var': pm10_var
         }
     
     except Exception as e:
         st.error(f"❌ Erro ao processar os dados: {str(e)}")
-        st.write("Detalhes da requisição:")
-        st.write(request)
         return None
+
+# Títulos e introdução
+st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
+st.markdown("""
+### Sistema Integrado de Monitoramento da Qualidade do Ar
+
+Este aplicativo monitora diretamente as concentrações de Material Particulado (PM2.5 e PM10) 
+para todos os municípios de Mato Grosso do Sul usando dados diretos do CAMS.
+
+**Características desta versão:**
+- 📊 Dados diretos de PM2.5 e PM10 do CAMS (sem conversão de AOD)
+- 🎯 Visualização centralizada no município selecionado
+- 📈 Índice de Qualidade do Ar (IQA) calculado
+- 🔮 Previsões para os próximos 5 dias
+- 🗺️ Mapas com contexto estadual e foco municipal
+""")
 
 # Carregar shapefiles dos municípios
 with st.spinner("Carregando shapes dos municípios..."):
@@ -918,10 +702,7 @@ with st.spinner("Carregando shapes dos municípios..."):
 st.sidebar.header("⚙️ Configurações")
 
 # Seleção de cidade
-available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
-if not available_cities:
-    available_cities = list(cities.keys())
-
+available_cities = sorted(list(cities.keys()))
 city = st.sidebar.selectbox("Selecione o município para análise detalhada", available_cities)
 lat_center, lon_center = cities[city]
 
@@ -938,7 +719,6 @@ end_hour = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours
 st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
     animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
-    show_pm10_animation = st.checkbox("Gerar animação também para PM10", value=False)
 
 # Informações sobre dados diretos
 st.sidebar.info("📊 **Dados Diretos CAMS**\nEste sistema utiliza concentrações de PM2.5 e PM10 medidas diretamente pelos sensores do CAMS, sem conversão de AOD.")
@@ -962,52 +742,114 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
             
             # Aba do Mapa
             with tab3:
+                st.subheader(f"🗺️ Mapa Contextualizado - {city}")
+                st.image(results['static_map'], caption=f"Distribuição de PM2.5 em {city} com contexto estadual")
+                
                 st.subheader(f"🎬 Animação PM2.5 - {city}")
                 st.image(results['animation'], caption=f"Evolução temporal do PM2.5 em {city} ({start_date} a {end_date})")
                 
-                with open(results['animation'], "rb") as file:
-                    btn = st.download_button(
-                        label="⬇️ Baixar Animação (GIF)",
-                        data=file,
-                        file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
-                        mime="image/gif"
-                    )
+                col1, col2 = st.columns(2)
+                with col1:
+                    with open(results['static_map'], "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Baixar Mapa Estático (PNG)",
+                            data=file,
+                            file_name=f"Mapa_PM25_{city}_{start_date}.png",
+                            mime="image/png"
+                        )
+                with col2:
+                    with open(results['animation'], "rb") as file:
+                        btn = st.download_button(
+                            label="⬇️ Baixar Animação (GIF)",
+                            data=file,
+                            file_name=f"Animacao_PM25_{city}_{start_date}_to_{end_date}.gif",
+                            mime="image/gif"
+                        )
                 
                 # Informações sobre o mapa
-                st.info(f"""
-                **Como interpreter o mapa de {city}:**
-                - 🟢 Verde: PM2.5 < 12 μg/m³ (Boa qualidade)
-                - 🟡 Amarelo: PM2.5 12-35 μg/m³ (Moderada)
-                - 🟠 Laranja: PM2.5 35-55 μg/m³ (Insalubre para sensíveis)
-                - 🔴 Vermelho: PM2.5 > 55 μg/m³ (Insalubre)
-                
-                O ponto vermelho marca a localização de **{city}**.
-                Dados obtidos diretamente do CAMS (sem conversão de AOD).
-                """)
+                with st.expander("ℹ️ Informações Técnicas dos Mapas"):
+                    st.markdown("""
+                    ### Metodologia de Mapeamento
+                    
+                    **Dados Utilizados:**
+                    - Fonte: CAMS (Copernicus Atmosphere Monitoring Service)
+                    - Variável: particulate_matter_2.5um (PM2.5 direta)
+                    - Resolução espacial: ~0.4° x 0.4° (~44 km)
+                    - Resolução temporal: 3 horas
+                    
+                    **Shapefiles:**
+                    - Municípios de MS: IBGE 2022
+                    - Projeção: PlateCarree (Geographic)
+                    - Sistema de coordenadas: EPSG:4326
+                    
+                    **Visualização:**
+                    - Mapa estadual: Localização contextual
+                    - Mapa local: Concentrações detalhadas
+                    - Escala de cores: YlOrRd (Amarelo-Laranja-Vermelho)
+                    - Níveis de qualidade baseados em padrões EPA/OMS
+                    
+                    **Interpretação:**
+                    - 🟢 Verde: PM2.5 < 12 μg/m³ (Boa qualidade)
+                    - 🟡 Amarelo: PM2.5 12-35 μg/m³ (Moderada)
+                    - 🟠 Laranja: PM2.5 35-55 μg/m³ (Insalubre para sensíveis)
+                    - 🔴 Vermelho: PM2.5 > 55 μg/m³ (Insalubre)
+                    """)
             
             # Aba de Análise do Município
             with tab1:
                 st.subheader(f"📊 Análise Detalhada - {city}")
                 
-                col1, col2 = st.columns([3, 2])
+                df_combined = results['forecast']
                 
-                with col1:
-                    df_combined = results['forecast']
+                # Separar dados históricos e previsão
+                hist_data = df_combined[df_combined['type'] == 'historical']
+                forecast_data = df_combined[df_combined['type'] == 'forecast']
+                
+                if not hist_data.empty:
+                    # Estatísticas atuais
+                    curr_pm25 = hist_data['pm25'].iloc[-1]
+                    curr_pm10 = hist_data['pm10'].iloc[-1]
+                    curr_aqi = hist_data['aqi'].iloc[-1]
+                    curr_category = hist_data['aqi_category'].iloc[-1]
+                    curr_color = hist_data['aqi_color'].iloc[-1]
                     
-                    # Criar subplots para PM2.5 e PM10
-                    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("PM2.5 Atual", f"{curr_pm25:.1f} μg/m³")
+                    col2.metric("PM10 Atual", f"{curr_pm10:.1f} μg/m³")
+                    col3.metric("IQA Atual", f"{curr_aqi:.0f}", curr_category)
                     
-                    # Separar dados históricos e previsão
-                    hist_data = df_combined[df_combined['type'] == 'historical']
-                    forecast_data = df_combined[df_combined['type'] == 'forecast']
+                    # Categoria de qualidade
+                    st.markdown(f"""
+                    <div style="padding:15px; border-radius:10px; background-color:{curr_color}; 
+                    color:white; text-align:center; margin:10px 0;">
+                    <h3 style="margin:0;">Qualidade do Ar Atual</h3>
+                    <h2 style="margin:5px 0;">{curr_category}</h2>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Recomendações
+                    st.subheader("💡 Recomendações")
+                    if curr_aqi <= 50:
+                        st.success("✅ Condições ideais para atividades ao ar livre")
+                    elif curr_aqi <= 100:
+                        st.info("ℹ️ Pessoas sensíveis devem considerar limitar esforços prolongados")
+                    elif curr_aqi <= 150:
+                        st.warning("⚠️ Grupos sensíveis devem evitar esforços ao ar livre")
+                    elif curr_aqi <= 200:
+                        st.error("🚫 Evite esforços prolongados ao ar livre")
+                    else:
+                        st.error("☠️ Evite todas as atividades ao ar livre")
+                
+                # Gráficos de série temporal
+                if not df_combined.empty:
+                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
                     
                     # Gráfico PM2.5
                     ax1.plot(hist_data['time'], hist_data['pm25'], 
-                           'o-', color='darkblue', label='PM2.5 Observado', markersize=6)
+                           'o-', color='darkblue', label='PM2.5 Observado', markersize=4)
                     ax1.plot(forecast_data['time'], forecast_data['pm25'], 
-                           'x--', color='red', label='PM2.5 Previsto', markersize=6)
+                           'x--', color='red', label='PM2.5 Previsto', markersize=4)
                     ax1.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (25 μg/m³)')
-                    ax1.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
                     ax1.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
                     ax1.legend()
                     ax1.grid(True, alpha=0.3)
@@ -1015,115 +857,24 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     
                     # Gráfico PM10
                     ax2.plot(hist_data['time'], hist_data['pm10'], 
-                           'o-', color='brown', label='PM10 Observado', markersize=6)
+                           'o-', color='brown', label='PM10 Observado', markersize=4)
                     ax2.plot(forecast_data['time'], forecast_data['pm10'], 
-                           'x--', color='darkred', label='PM10 Previsto', markersize=6)
+                           'x--', color='darkred', label='PM10 Previsto', markersize=4)
                     ax2.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
-                    ax2.axhline(y=150, color='red', linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
                     ax2.set_ylabel('PM10 (μg/m³)', fontsize=12)
+                    ax2.set_xlabel('Data/Hora', fontsize=12)
                     ax2.legend()
                     ax2.grid(True, alpha=0.3)
                     ax2.set_title('Material Particulado PM10', fontsize=14)
                     
-                    # Gráfico IQA
-                    ax3.plot(hist_data['time'], hist_data['aqi'], 
-                           'o-', color='purple', label='IQA Observado', markersize=6)
-                    ax3.plot(forecast_data['time'], forecast_data['aqi'], 
-                           'x--', color='magenta', label='IQA Previsto', markersize=6)
-                    
-                    # Zonas de qualidade do ar
-                    ax3.axhspan(0, 50, alpha=0.2, color='green', label='Boa')
-                    ax3.axhspan(51, 100, alpha=0.2, color='yellow', label='Moderada')
-                    ax3.axhspan(101, 150, alpha=0.2, color='orange', label='Insalubre p/ Sensíveis')
-                    ax3.axhspan(151, 200, alpha=0.2, color='red', label='Insalubre')
-                    
-                    ax3.set_ylabel('IQA', fontsize=12)
-                    ax3.set_xlabel('Data/Hora', fontsize=12)
-                    ax3.legend()
-                    ax3.grid(True, alpha=0.3)
-                    ax3.set_title('Índice de Qualidade do Ar', fontsize=14)
-                    
                     # Formatar datas
-                    ax3.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
-                    plt.xticks(rotation=45)
+                    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
+                    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
                     
                     plt.tight_layout()
                     st.pyplot(fig)
-                
-                with col2:
-                    st.subheader("📈 Estatísticas Atuais")
-                    
-                    if not hist_data.empty:
-                        curr_pm25 = hist_data['pm25'].iloc[-1]
-                        curr_pm10 = hist_data['pm10'].iloc[-1]
-                        curr_aqi = hist_data['aqi'].iloc[-1]
-                        curr_category = hist_data['aqi_category'].iloc[-1]
-                        curr_color = hist_data['aqi_color'].iloc[-1]
-                        
-                        # Métricas
-                        col_a, col_b = st.columns(2)
-                        col_a.metric("PM2.5 Atual", f"{curr_pm25:.1f} μg/m³")
-                        col_b.metric("PM10 Atual", f"{curr_pm10:.1f} μg/m³")
-                        
-                        st.metric("IQA Atual", f"{curr_aqi:.0f}")
-                        
-                        # Categoria de qualidade
-                        st.markdown(f"""
-                        <div style="padding:15px; border-radius:10px; background-color:{curr_color}; 
-                        color:white; text-align:center; margin:10px 0;">
-                        <h3 style="margin:0;">Qualidade do Ar</h3>
-                        <h2 style="margin:5px 0;">{curr_category}</h2>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # Recomendações
-                        st.subheader("💡 Recomendações")
-                        if curr_aqi <= 50:
-                            st.success("✅ Condições ideais para atividades ao ar livre")
-                        elif curr_aqi <= 100:
-                            st.info("ℹ️ Pessoas sensíveis devem considerar limitar esforços prolongados")
-                        elif curr_aqi <= 150:
-                            st.warning("⚠️ Grupos sensíveis devem evitar esforços ao ar livre")
-                        elif curr_aqi <= 200:
-                            st.error("🚫 Evite esforços prolongados ao ar livre")
-                        else:
-                            st.error("☠️ Evite todas as atividades ao ar livre")
-                        
-                        # Comparação com limites
-                        st.subheader("📏 Comparação com Padrões")
-                        
-                        pm25_who_limit = 25
-                        pm10_who_limit = 50
-                        
-                        st.progress(min(curr_pm25 / pm25_who_limit, 1.0))
-                        st.caption(f"PM2.5: {curr_pm25:.1f}/{pm25_who_limit} μg/m³ (Limite OMS 24h)")
-                        
-                        st.progress(min(curr_pm10 / pm10_who_limit, 1.0))
-                        st.caption(f"PM10: {curr_pm10:.1f}/{pm10_who_limit} μg/m³ (Limite OMS 24h)")
-                        
-                        # Previsão resumida dos próximos 5 dias
-                        if not forecast_data.empty:
-                            st.subheader("🔮 Próximos 5 dias")
-                            
-                            forecast_data['date'] = forecast_data['time'].dt.date
-                            daily_forecast = forecast_data.groupby('date').agg({
-                                'aqi': 'max',
-                                'aqi_category': lambda x: x.iloc[x.values.argmax()],
-                                'pm25': 'mean',
-                                'pm10': 'mean'
-                            }).reset_index()
-                            
-                            for _, row in daily_forecast.iterrows():
-                                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
-                                st.markdown(f"""
-                                <div style="padding:5px; border-radius:5px; background-color:{aqi_color}; 
-                                color:{'white' if aqi_color != 'yellow' else 'black'}; margin:2px 0;">
-                                <b>{row['date'].strftime('%d/%m')}:</b> IQA {row['aqi']:.0f} - {row['aqi_category']}
-                                </div>
-                                """, unsafe_allow_html=True)
                     
                     # Exportar dados
-                    st.subheader("💾 Exportar Dados")
                     csv = df_combined.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="⬇️ Baixar Dados Completos (CSV)",
@@ -1132,469 +883,311 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                         mime="text/csv",
                     )
             
-            # Aba de Alertas
-            with tab2:
-                st.subheader("⚠️ Alerta de Qualidade do Ar - Mato Grosso do Sul")
-                
-                if 'top_pollution' in results and not results['top_pollution'].empty:
-                    top_cities = results['top_pollution'].head(20)
-                    
-                    # Estatísticas gerais
-                    critical_cities = top_cities[top_cities['aqi_max'] > 100]
-                    very_critical = top_cities[top_cities['aqi_max'] > 150]
-                    
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Cidades em Alerta", len(critical_cities))
-                    col2.metric("Condição Insalubre", len(very_critical))
-                    col3.metric("IQA Máximo Previsto", f"{top_cities['aqi_max'].max():.0f}")
-                    
-                    if len(critical_cities) > 0:
-                        st.error(f"""
-                        ### 🚨 ALERTA DE QUALIDADE DO AR
-                        
-                        **{len(critical_cities)} municípios** com previsão de qualidade do ar 
-                        inadequada nos próximos 5 dias!
-                        
-                        Municípios mais críticos:
-                        1. **{top_cities.iloc[0]['cidade']}**: IQA {top_cities.iloc[0]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[0]['pm25_max']:.1f} μg/m³
-                        2. **{top_cities.iloc[1]['cidade']}**: IQA {top_cities.iloc[1]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[1]['pm25_max']:.1f} μg/m³
-                        3. **{top_cities.iloc[2]['cidade']}**: IQA {top_cities.iloc[2]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[2]['pm25_max']:.1f} μg/m³
-                        """)
-                    
-                    # Tabela completa
-                    st.markdown("### 📊 Ranking de Qualidade do Ar por Município")
-                    
-                    # Renomear colunas
-                    top_cities_display = top_cities.rename(columns={
-                        'cidade': 'Município',
-                        'pm25_max': 'PM2.5 Máx (μg/m³)',
-                        'pm10_max': 'PM10 Máx (μg/m³)',
-                        'aqi_max': 'IQA Máx',
-                        'data_max': 'Data Crítica',
-                        'categoria': 'Categoria'
-                    })
-                    
-                    # Função para colorir linhas baseado no IQA
-                    def style_aqi_row(row):
-                        aqi = row['IQA Máx']
-                        if aqi <= 50:
-                            return ['background-color: #00e400; color: black'] * len(row)
-                        elif aqi <= 100:
-                            return ['background-color: #ffff00; color: black'] * len(row)
-                        elif aqi <= 150:
-                            return ['background-color: #ff7e00; color: white'] * len(row)
-                        elif aqi <= 200:
-                            return ['background-color: #ff0000; color: white'] * len(row)
-                        elif aqi <= 300:
-                            return ['background-color: #8f3f97; color: white'] * len(row)
-                        else:
-                            return ['background-color: #7e0023; color: white'] * len(row)
-                    
-                    # Exibir tabela estilizada
-                    st.dataframe(
-                        top_cities_display.style.apply(style_aqi_row, axis=1),
-                        use_container_width=True
-                    )
-                    
-                    # Gráfico dos 10 municípios mais críticos
-                    st.subheader("📊 Material Particulado - 10 Municípios Mais Críticos")
-                    
-                    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
-                    
-                    top10 = top_cities.head(10)
-                    
-                    # Criar posições para as barras
-                    x_pos = np.arange(len(top10))
-                    width = 0.35
-                    
-                    # Gráfico PM2.5 e PM10
-                    bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width, 
-                                  color='darkblue', alpha=0.8, label='PM2.5')
-                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, 
-                                  color='brown', alpha=0.8, label='PM10')
-                    
-                    ax.set_xticks(x_pos)
-                    ax.set_xticklabels(top10['cidade'], rotation=45, ha='right')
-                    ax.set_ylabel('Concentração (μg/m³)', fontsize=12)
-                    ax.set_title('Material Particulado Máximo Previsto nos Próximos 5 Dias', fontsize=14)
-                    
-                    # Linhas de referência OMS
-                    ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite PM2.5 OMS (25 μg/m³)')
-                    ax.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='Limite PM10 OMS (50 μg/m³)')
-                    
-                    ax.legend()
-                    ax.grid(True, alpha=0.3)
-                    
-                    # Adicionar valores nas barras
-                    for bar, val in zip(bars1, top10['pm25_max']):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
-                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
-                    
-                    for bar, val in zip(bars2, top10['pm10_max']):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
-                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    
-                    # Download dos dados
-                    csv_alert = top_cities.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="⬇️ Baixar Dados de Alerta (CSV)",
-                        data=csv_alert,
-                        file_name=f"Alerta_Qualidade_Ar_MS_{start_date}_to_{end_date}.csv",
-                        mime="text/csv",
-                    )
-                else:
-                    st.info("Dados de análise estadual não disponíveis. Mostrando apenas análise local.")
-            
-            # Aba de análise detalhada
-            with tab4:
-                st.subheader("📈 Análise Detalhada de Material Particulado")
-                
-                # Informações sobre dados diretos do CAMS
-                with st.expander("ℹ️ Sobre os Dados Diretos do CAMS"):
-                    st.markdown("""
-                    ### Dados Diretos de PM2.5 e PM10 do CAMS
-                    
-                    Este aplicativo utiliza dados diretos de concentração de material particulado 
-                    fornecidos pelo CAMS (Copernicus Atmosphere Monitoring Service):
-                    
-                    **Vantagens dos dados diretos:**
-                    - ✅ Maior precisão: Sem necessidade de conversão de AOD
-                    - ✅ Validação contínua: Dados calibrados com estações de monitoramento
-                    - ✅ Resolução temporal: Dados a cada 3 horas
-                    - ✅ Cobertura global: Disponível para todo o território brasileiro
-                    
-                    **Características técnicas:**
-                    - **Resolução espacial**: ~0.4° x 0.4° (≈ 44 km)
-                    - **Resolução temporal**: 3 horas
-                    - **Unidades**: μg/m³ (microgramas por metro cúbico)
-                    - **Fonte**: Sensores e modelos atmosféricos integrados
-                    - **Validação**: Comparação contínua com estações de superfície
-                    
-                    **Variáveis utilizadas:**
-                    - `particulate_matter_2.5um`: PM2.5 (partículas < 2.5 μm)
-                    - `particulate_matter_10um`: PM10 (partículas < 10 μm)
-                    """)
-                
-                df_combined = results['forecast']
-                
-                if not df_combined.empty:
-                    # Separar dados históricos e previsões
-                    hist_data = df_combined[df_combined['type'] == 'historical']
-                    forecast_data = df_combined[df_combined['type'] == 'forecast']
-                    
-                    # Análise estatística
-                    if not hist_data.empty:
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.subheader("📊 Estatísticas Históricas")
-                            
-                            # Métricas estatísticas
-                            stats_data = {
-                                'Métrica': ['Média', 'Mediana', 'Máximo', 'Mínimo', 'Desvio Padrão'],
-                                'PM2.5 (μg/m³)': [
-                                    f"{hist_data['pm25'].mean():.1f}",
-                                    f"{hist_data['pm25'].median():.1f}",
-                                    f"{hist_data['pm25'].max():.1f}",
-                                    f"{hist_data['pm25'].min():.1f}",
-                                    f"{hist_data['pm25'].std():.1f}"
-                                ],
-                                'PM10 (μg/m³)': [
-                                    f"{hist_data['pm10'].mean():.1f}",
-                                    f"{hist_data['pm10'].median():.1f}",
-                                    f"{hist_data['pm10'].max():.1f}",
-                                    f"{hist_data['pm10'].min():.1f}",
-                                    f"{hist_data['pm10'].std():.1f}"
-                                ],
-                                'IQA': [
-                                    f"{hist_data['aqi'].mean():.0f}",
-                                    f"{hist_data['aqi'].median():.0f}",
-                                    f"{hist_data['aqi'].max():.0f}",
-                                    f"{hist_data['aqi'].min():.0f}",
-                                    f"{hist_data['aqi'].std():.0f}"
-                                ]
-                            }
-                            
-                            stats_df = pd.DataFrame(stats_data)
-                            st.dataframe(stats_df, use_container_width=True)
-                            
-                            # Análise de correlação PM2.5 vs PM10
-                            if len(hist_data) > 2:
-                                corr_pm = hist_data['pm25'].corr(hist_data['pm10'])
-                                
-                                st.subheader("🔍 Correlações")
-                                st.metric("PM2.5 vs PM10", f"{corr_pm:.3f}")
-                                
-                                # Tendência temporal
-                                hist_data_copy = hist_data.copy()
-                                hist_data_copy['time_numeric'] = (hist_data_copy['time'] - hist_data_copy['time'].min()).dt.total_seconds()
-                                
-                                slope_pm25, _, r_pm25, _, _ = stats.linregress(hist_data_copy['time_numeric'], hist_data_copy['pm25'])
-                                slope_pm10, _, r_pm10, _, _ = stats.linregress(hist_data_copy['time_numeric'], hist_data_copy['pm10'])
-                                
-                                st.subheader("📈 Tendências Temporais")
-                                trend_pm25 = "↗️ Crescente" if slope_pm25 > 0 else "↘️ Decrescente" if slope_pm25 < 0 else "➡️ Estável"
-                                trend_pm10 = "↗️ Crescente" if slope_pm10 > 0 else "↘️ Decrescente" if slope_pm10 < 0 else "➡️ Estável"
-                                
-                                st.write(f"**PM2.5**: {trend_pm25} (R² = {r_pm25**2:.3f})")
-                                st.write(f"**PM10**: {trend_pm10} (R² = {r_pm10**2:.3f})")
-                        
-                        with col2:
-                            st.subheader("🎯 Distribuição dos Valores")
-                            
-                            # Histogramas
-                            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
-                            
-                            # Histograma PM2.5
-                            ax1.hist(hist_data['pm25'], bins=15, alpha=0.7, color='darkblue', edgecolor='black')
-                            ax1.axvline(hist_data['pm25'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm25"].mean():.1f}')
-                            ax1.axvline(25, color='orange', linestyle=':', label='Limite OMS: 25 μg/m³')
-                            ax1.set_xlabel('PM2.5 (μg/m³)')
-                            ax1.set_ylabel('Frequência')
-                            ax1.set_title('Distribuição PM2.5')
-                            ax1.legend()
-                            ax1.grid(True, alpha=0.3)
-                            
-                            # Histograma PM10
-                            ax2.hist(hist_data['pm10'], bins=15, alpha=0.7, color='brown', edgecolor='black')
-                            ax2.axvline(hist_data['pm10'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm10"].mean():.1f}')
-                            ax2.axvline(50, color='orange', linestyle=':', label='Limite OMS: 50 μg/m³')
-                            ax2.set_xlabel('PM10 (μg/m³)')
-                            ax2.set_ylabel('Frequência')
-                            ax2.set_title('Distribuição PM10')
-                            ax2.legend()
-                            ax2.grid(True, alpha=0.3)
-                            
-                            plt.tight_layout()
-                            st.pyplot(fig)
-                            
-                            # Percentis de qualidade do ar
-                            st.subheader("📊 Percentis de Qualidade")
-                            
-                            percentis = [10, 25, 50, 75, 90]
-                            perc_data = []
-                            
-                            for p in percentis:
-                                perc_data.append({
-                                    'Percentil': f'P{p}',
-                                    'PM2.5': f"{np.percentile(hist_data['pm25'], p):.1f}",
-                                    'PM10': f"{np.percentile(hist_data['pm10'], p):.1f}",
-                                    'IQA': f"{np.percentile(hist_data['aqi'], p):.0f}"
-                                })
-                            
-                            perc_df = pd.DataFrame(perc_data)
-                            st.dataframe(perc_df, use_container_width=True)
-                    
-                    # Análise das previsões
-                    if not forecast_data.empty:
-                        st.subheader("🔮 Análise das Previsões (Próximos 5 Dias)")
-                        
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            # Gráfico de evolução temporal das previsões
-                            fig, ax = plt.subplots(figsize=(12, 6))
-                            
-                            # Plot PM2.5 e PM10 ao longo do tempo
-                            ax2 = ax.twinx()
-                            
-                            line1 = ax.plot(forecast_data['time'], forecast_data['pm25'], 
-                                          'o-', color='darkblue', label='PM2.5', markersize=4)
-                            line2 = ax2.plot(forecast_data['time'], forecast_data['pm10'], 
-                                           's-', color='brown', label='PM10', markersize=4)
-                            
-                            ax.set_xlabel('Data/Hora')
-                            ax.set_ylabel('PM2.5 (μg/m³)', color='darkblue')
-                            ax2.set_ylabel('PM10 (μg/m³)', color='brown')
-                            
-                            ax.tick_params(axis='y', labelcolor='darkblue')
-                            ax2.tick_params(axis='y', labelcolor='brown')
-                            
-                            # Linhas de referência
-                            ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7)
-                            ax2.axhline(y=50, color='red', linestyle='--', alpha=0.7)
-                            
-                            # Formatar datas
-                            ax.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
-                            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45)
-                            
-                            ax.grid(True, alpha=0.3)
-                            ax.set_title('Evolução Temporal: PM2.5 vs PM10 (Previsão)')
-                            
-                            # Legendas
-                            lines = line1 + line2
-                            labels = [l.get_label() for l in lines]
-                            ax.legend(lines, labels, loc='upper left')
-                            
-                            plt.tight_layout()
-                            st.pyplot(fig)
-                        
-                        with col2:
-                            # Análise por período do dia
-                            forecast_data['hour'] = forecast_data['time'].dt.hour
-                            
-                            # Agrupar por período do dia
-                            periods = {
-                                'Madrugada (0-6h)': forecast_data[forecast_data['hour'].isin(range(0, 7))],
-                                'Manhã (6-12h)': forecast_data[forecast_data['hour'].isin(range(6, 13))],
-                                'Tarde (12-18h)': forecast_data[forecast_data['hour'].isin(range(12, 19))],
-                                'Noite (18-24h)': forecast_data[forecast_data['hour'].isin(range(18, 24))]
-                            }
-                            
-                            period_stats = []
-                            for period_name, period_data in periods.items():
-                                if not period_data.empty:
-                                    period_stats.append({
-                                        'Período': period_name,
-                                        'PM2.5 Médio': f"{period_data['pm25'].mean():.1f}",
-                                        'PM10 Médio': f"{period_data['pm10'].mean():.1f}",
-                                        'IQA Máximo': f"{period_data['aqi'].max():.0f}",
-                                        'Categoria Pior': period_data.loc[period_data['aqi'].idxmax(), 'aqi_category'] if not period_data.empty else 'N/A'
-                                    })
-                            
-                            if period_stats:
-                                st.subheader("⏰ Análise por Período do Dia")
-                                period_df = pd.DataFrame(period_stats)
-                                st.dataframe(period_df, use_container_width=True)
-                            
-                            # Dias críticos
-                            st.subheader("🚨 Dias Mais Críticos")
-                            
-                            forecast_data['date'] = forecast_data['time'].dt.date
-                            daily_max = forecast_data.groupby('date').agg({
-                                'aqi': 'max',
-                                'pm25': 'max',
-                                'pm10': 'max',
-                                'aqi_category': lambda x: x.iloc[x.values.argmax()]
-                            }).reset_index().sort_values('aqi', ascending=False)
-                            
-                            for idx, row in daily_max.head(3).iterrows():
-                                date_str = row['date'].strftime('%d/%m/%Y')
-                                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
-                                
-                                st.markdown(f"""
-                                <div style="padding:10px; border-radius:8px; background-color:{aqi_color}; 
-                                color:{'white' if aqi_color not in ['yellow'] else 'black'}; margin:5px 0;">
-                                <b>{date_str}</b><br>
-                                IQA: {row['aqi']:.0f} - {row['aqi_category']}<br>
-                                PM2.5: {row['pm25']:.1f} μg/m³ | PM10: {row['pm10']:.1f} μg/m³
-                                </div>
-                                """, unsafe_allow_html=True)
-                    
-                    # Gráfico de correlação PM2.5 vs PM10
-                    if not hist_data.empty:
-                        st.subheader("📈 Correlação PM2.5 vs PM10")
-                        
-                        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-                        
-                        # Scatter plot
-                        ax.scatter(hist_data['pm25'], hist_data['pm10'], alpha=0.6, color='purple')
-                        
-                        # Linha de tendência
-                        z = np.polyfit(hist_data['pm25'], hist_data['pm10'], 1)
-                        p = np.poly1d(z)
-                        ax.plot(hist_data['pm25'], p(hist_data['pm25']), "r--", alpha=0.8)
-                        
-                        ax.set_xlabel('PM2.5 (μg/m³)')
-                        ax.set_ylabel('PM10 (μg/m³)')
-                        ax.set_title(f'Correlação PM2.5 vs PM10\nR² = {hist_data["pm25"].corr(hist_data["pm10"])**2:.3f}')
-                        ax.grid(True, alpha=0.3)
-                        
-                        plt.tight_layout()
-                        st.pyplot(fig)
-                        
-                        # Informações sobre a razão PM2.5/PM10
-                        pm_ratio = hist_data['pm25'] / hist_data['pm10']
-                        st.subheader("⚖️ Razão PM2.5/PM10")
-                        
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Razão Média", f"{pm_ratio.mean():.2f}")
-                        col2.metric("Razão Mediana", f"{pm_ratio.median():.2f}")
-                        col3.metric("Desvio Padrão", f"{pm_ratio.std():.2f}")
-                        
-                        st.info("""
-                        **Interpretação da razão PM2.5/PM10:**
-                        - Razão alta (>0.6): Indica predominância de fontes antropogênicas (veículos, indústrias)
-                        - Razão média (0.4-0.6): Mistura de fontes naturais e antropogênicas
-                        - Razão baixa (<0.4): Predominância de fontes naturais (poeira, sal marinho)
-                        """)
-                    
-                    # Comparação com padrões internacionais
-                    st.subheader("🌍 Comparação com Padrões Internacionais")
-                    
-                    standards = {
-                        'Padrão': ['OMS (24h)', 'EPA (24h)', 'CONAMA (24h)', 'UE (24h)'],
-                        'PM2.5 (μg/m³)': [25, 35, 60, 25],
-                        'PM10 (μg/m³)': [50, 150, 150, 50]
-                    }
-                    
-                    standards_df = pd.DataFrame(standards)
-                    
-                    if not df_combined.empty:
-                        current_pm25 = df_combined['pm25'].iloc[-1] if len(df_combined) > 0 else 0
-                        current_pm10 = df_combined['pm10'].iloc[-1] if len(df_combined) > 0 else 0
-                        
-                        standards_df['Status PM2.5'] = standards_df['PM2.5 (μg/m³)'].apply(
-                            lambda x: '✅ OK' if current_pm25 <= x else '❌ Excede'
-                        )
-                        standards_df['Status PM10'] = standards_df['PM10 (μg/m³)'].apply(
-                            lambda x: '✅ OK' if current_pm10 <= x else '❌ Excede'
-                        )
-                    
-                    st.dataframe(standards_df, use_container_width=True)
-                    
-                    # Recomendações técnicas específicas
-                    st.subheader("💡 Recomendações Técnicas")
-                    
-                    if not df_combined.empty:
-                        max_pm25_forecast = forecast_data['pm25'].max() if not forecast_data.empty else 0
-                        max_pm10_forecast = forecast_data['pm10'].max() if not forecast_data.empty else 0
-                        max_aqi_forecast = forecast_data['aqi'].max() if not forecast_data.empty else 0
-                        
-                        recommendations = []
-                        
-                        if max_pm25_forecast > 35:
-                            recommendations.append("🚨 **PM2.5 acima do limite EPA previsto** - Alertar população sensível")
-                        
-                        if max_pm10_forecast > 150:
-                            recommendations.append("⚠️ **PM10 acima do limite EPA previsto** - Considerar medidas de emergência")
-                        
-                        if max_aqi_forecast > 150:
-                            recommendations.append("🔴 **IQA Insalubre previsto** - Evitar atividades ao ar livre")
-                        
-                        # Verificar se é período de queimadas (maio-setembro)
-                        current_month = datetime.now().month
-                        if 5 <= current_month <= 9:
-                            recommendations.append("🔥 **Período de queimadas ativo** - Monitoramento intensificado recomendado")
-                        
-                        # Verificar variabilidade alta nos dados
-                        if not hist_data.empty and hist_data['pm25'].std() > 10:
-                            recommendations.append("📊 **Alta variabilidade nos dados de PM2.5** - Condições atmosféricas instáveis")
-                        
-                        # Verificar razão PM2.5/PM10
-                        if not hist_data.empty:
-                            pm_ratio_mean = (hist_data['pm25'] / hist_data['pm10']).mean()
-                            if pm_ratio_mean > 0.6:
-                                recommendations.append("🏭 **Alta razão PM2.5/PM10** - Possível influência de fontes antropogênicas")
-                            elif pm_ratio_mean < 0.4:
-                                recommendations.append("🌪️ **Baixa razão PM2.5/PM10** - Possível influência de poeira/fontes naturais")
-                        
-                        if not recommendations:
-                            recommendations.append("✅ **Condições dentro dos padrões esperados** - Mantenha monitoramento de rotina")
-                        
-                        for rec in recommendations:
-                            st.markdown(f"- {rec}")
-                
-                else:
-                    st.warning("Dados insuficientes para análise detalhada de PM.")
+# Aba de Alertas
+with tab2:
+    st.subheader("⚠️ Sistema de Alerta de Qualidade do Ar")
     
+    # Análise da situação atual
+    if not df_combined.empty:
+        current_data = df_combined[df_combined['type'] == 'historical']
+        if not current_data.empty:
+            latest_data = current_data.iloc[-1]
+            
+            # Determinar nível de alerta
+            alert_level = "BAIXO"
+            alert_color = "green"
+            recommendations = []
+            
+            if latest_data['aqi'] > 100:
+                alert_level = "MODERADO"
+                alert_color = "orange"
+                recommendations.append("Pessoas sensíveis devem reduzir atividades ao ar livre")
+            if latest_data['aqi'] > 150:
+                alert_level = "ALTO"
+                alert_color = "red"
+                recommendations.append("Toda a população deve evitar atividades ao ar livre prolongadas")
+            if latest_data['aqi'] > 200:
+                alert_level = "MUITO ALTO"
+                alert_color = "purple"
+                recommendations.append("Evitar qualquer atividade ao ar livre")
+            
+            # Display do alerta
+            st.markdown(f"""
+            <div style="padding:20px; border-radius:10px; background-color:{alert_color}; 
+            color:white; text-align:center; margin:10px 0;">
+            <h2 style="margin:0;">NÍVEL DE ALERTA: {alert_level}</h2>
+            <h3 style="margin:5px 0;">IQA: {latest_data['aqi']:.0f} - {latest_data['aqi_category']}</h3>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Detalhes do alerta
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📊 Concentrações Atuais")
+                st.metric("PM2.5", f"{latest_data['pm25']:.1f} μg/m³")
+                st.metric("PM10", f"{latest_data['pm10']:.1f} μg/m³")
+                
+                # Comparação com padrões OMS
+                st.subheader("📏 Comparação com Padrões OMS")
+                pm25_status = "✅ Dentro" if latest_data['pm25'] <= 25 else "⚠️ Acima"
+                pm10_status = "✅ Dentro" if latest_data['pm10'] <= 50 else "⚠️ Acima"
+                
+                st.write(f"**PM2.5**: {pm25_status} do limite (25 μg/m³)")
+                st.write(f"**PM10**: {pm10_status} do limite (50 μg/m³)")
+            
+            with col2:
+                st.subheader("📈 Tendência")
+                if len(current_data) > 1:
+                    pm25_trend = current_data['pm25'].iloc[-1] - current_data['pm25'].iloc[-2]
+                    pm10_trend = current_data['pm10'].iloc[-1] - current_data['pm10'].iloc[-2]
+                    
+                    trend_icon_25 = "↗️" if pm25_trend > 0 else "↘️" if pm25_trend < 0 else "➡️"
+                    trend_icon_10 = "↗️" if pm10_trend > 0 else "↘️" if pm10_trend < 0 else "➡️"
+                    
+                    st.metric("Tendência PM2.5", f"{pm25_trend:+.1f} μg/m³", delta=None, 
+                             help=f"{trend_icon_25} Variação desde a última medição")
+                    st.metric("Tendência PM10", f"{pm10_trend:+.1f} μg/m³", delta=None,
+                             help=f"{trend_icon_10} Variação desde a última medição")
+                
+                st.subheader("⏰ Última Atualização")
+                st.write(latest_data['time'].strftime("%d/%m/%Y %H:%M"))
+            
+            # Recomendações
+            st.subheader("💡 Recomendações")
+            if not recommendations:
+                st.success("✅ Condições favoráveis. Mantenha atividades normais.")
+            else:
+                for rec in recommendations:
+                    st.warning(rec)
+            
+            # Informações adicionais para grupos sensíveis
+            if latest_data['aqi'] > 100:
+                st.info("""
+                **Grupos sensíveis** incluem:
+                - Crianças e idosos
+                - Pessoas com doenças respiratórias ou cardíacas
+                - Gestantes
+                - Indivíduos que praticam atividades ao ar livre
+                """)
+        
+        # Previsão de alertas futuros
+        if not forecast_data.empty:
+            st.subheader("🔮 Previsão de Alertas para os Próximos Dias")
+            
+            # Agrupar por dia
+            forecast_data['date'] = forecast_data['time'].dt.date
+            daily_forecast = forecast_data.groupby('date').agg({
+                'aqi': 'max',
+                'aqi_category': lambda x: x.iloc[x.values.argmax()],
+                'pm25': 'max',
+                'pm10': 'max'
+            }).reset_index()
+            
+            for _, row in daily_forecast.iterrows():
+                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
+                st.markdown(f"""
+                <div style="padding:10px; border-radius:5px; background-color:{aqi_color}; 
+                color:white; margin:5px 0;">
+                <b>{row['date'].strftime('%d/%m')}:</b> IQA {row['aqi']:.0f} - {row['aqi_category']}
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.warning("Dados insuficientes para gerar alertas.")
+
+# Aba de análise detalhada
+with tab4:
+    st.subheader("📈 Análise Detalhada de Material Particulado")
+    
+    if not df_combined.empty:
+        # Separar dados históricos e previsões
+        hist_data = df_combined[df_combined['type'] == 'historical']
+        forecast_data = df_combined[df_combined['type'] == 'forecast']
+        
+        # Estatísticas descritivas
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📊 Estatísticas Descritivas - PM2.5")
+            if not hist_data.empty:
+                pm25_stats = hist_data['pm25'].describe()
+                st.write(f"Média: {pm25_stats['mean']:.2f} μg/m³")
+                st.write(f"Mediana: {pm25_stats['50%']:.2f} μg/m³")
+                st.write(f"Máximo: {pm25_stats['max']:.2f} μg/m³")
+                st.write(f"Mínimo: {pm25_stats['min']:.2f} μg/m³")
+                st.write(f"Desvio Padrão: {pm25_stats['std']:.2f} μg/m³")
+        
+        with col2:
+            st.subheader("📊 Estatísticas Descritivas - PM10")
+            if not hist_data.empty:
+                pm10_stats = hist_data['pm10'].describe()
+                st.write(f"Média: {pm10_stats['mean']:.2f} μg/m³")
+                st.write(f"Mediana: {pm10_stats['50%']:.2f} μg/m³")
+                st.write(f"Máximo: {pm10_stats['max']:.2f} μg/m³")
+                st.write(f"Mínimo: {pm10_stats['min']:.2f} μg/m³")
+                st.write(f"Desvio Padrão: {pm10_stats['std']:.2f} μg/m³")
+        
+        # Gráficos de distribuição
+        st.subheader("📈 Distribuição de Concentrações")
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        
+        if not hist_data.empty:
+            # Histograma PM2.5
+            ax1.hist(hist_data['pm25'], bins=15, alpha=0.7, color='darkblue', edgecolor='black')
+            ax1.axvline(hist_data['pm25'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm25"].mean():.1f}')
+            ax1.axvline(25, color='orange', linestyle=':', label='Limite OMS: 25 μg/m³')
+            ax1.set_xlabel('PM2.5 (μg/m³)')
+            ax1.set_ylabel('Frequência')
+            ax1.set_title('Distribuição de PM2.5')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            
+            # Histograma PM10
+            ax2.hist(hist_data['pm10'], bins=15, alpha=0.7, color='brown', edgecolor='black')
+            ax2.axvline(hist_data['pm10'].mean(), color='red', linestyle='--', label=f'Média: {hist_data["pm10"].mean():.1f}')
+            ax2.axvline(50, color='orange', linestyle=':', label='Limite OMS: 50 μg/m³')
+            ax2.set_xlabel('PM10 (μg/m³)')
+            ax2.set_ylabel('Frequência')
+            ax2.set_title('Distribuição de PM10')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig)
+        
+        # Análise de correlação
+        if len(hist_data) > 2:
+            st.subheader("🔍 Correlação entre PM2.5 e PM10")
+            
+            correlation = hist_data['pm25'].corr(hist_data['pm10'])
+            st.metric("Coeficiente de Correlação", f"{correlation:.3f}")
+            
+            # Gráfico de dispersão
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.scatter(hist_data['pm25'], hist_data['pm10'], alpha=0.6)
+            
+            # Linha de tendência
+            z = np.polyfit(hist_data['pm25'], hist_data['pm10'], 1)
+            p = np.poly1d(z)
+            ax.plot(hist_data['pm25'], p(hist_data['pm25']), "r--", alpha=0.8)
+            
+            ax.set_xlabel('PM2.5 (μg/m³)')
+            ax.set_ylabel('PM10 (μg/m³)')
+            ax.set_title(f'Correlação PM2.5 vs PM10 (R = {correlation:.3f})')
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            # Análise da razão PM2.5/PM10
+            st.subheader("⚖️ Razão PM2.5/PM10")
+            
+            pm_ratio = hist_data['pm25'] / hist_data['pm10']
+            avg_ratio = pm_ratio.mean()
+            
+            st.metric("Razão Média PM2.5/PM10", f"{avg_ratio:.2f}")
+            
+            # Interpretação da razão
+            if avg_ratio > 0.6:
+                st.info("""
+                **Interpretação:** Razão alta (>0.6) sugere predominância de fontes antropogênicas:
+                - Emissões veiculares
+                - Queima de combustíveis fósseis
+                - Processos industriais
+                """)
+            elif avg_ratio > 0.4:
+                st.info("""
+                **Interpretação:** Razão moderada (0.4-0.6) sugere mistura de fontes:
+                - Combinação de fontes naturais e antropogênicas
+                - Condições atmosféricas variadas
+                """)
+            else:
+                st.info("""
+                **Interpretação:** Razão baixa (<0.4) sugere predominância de fontes naturais:
+                - Poeira do solo
+                - Partículas de origem marinha
+                - Material biológico
+                """)
+        
+        # Análise temporal detalhada
+        st.subheader("⏰ Variação Temporal")
+        
+        if not hist_data.empty:
+            hist_data['hour'] = hist_data['time'].dt.hour
+            hourly_avg = hist_data.groupby('hour').agg({
+                'pm25': 'mean',
+                'pm10': 'mean'
+            }).reset_index()
+            
+            fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(hourly_avg['hour'], hourly_avg['pm25'], 'o-', label='PM2.5', color='darkblue')
+            ax.plot(hourly_avg['hour'], hourly_avg['pm10'], 's-', label='PM10', color='brown')
+            
+            ax.set_xlabel('Hora do Dia')
+            ax.set_ylabel('Concentração Média (μg/m³)')
+            ax.set_title('Variação Horária Média das Concentrações')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            ax.set_xticks(range(0, 24, 3))
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            # Explicação dos padrões horários
+            st.info("""
+            **Padrões horários típicos:**
+            - **Manhã (6-9h):** Pico devido às emissões veiculares e condições meteorológicas
+            - **Meio-dia (12-14h):** Redução devido à dispersão por convecção térmica
+            - **Tarde/noite (17-20h):** Segundo pico devido ao tráfego e estabilização atmosférica
+            - **Madrugada (0-5h):** Valores geralmente mais baixos
+            """)
+        
+        # Comparação com padrões internacionais
+        st.subheader("🌍 Comparação com Padrões Internacionais")
+        
+        standards_data = {
+            'Organização': ['OMS', 'EPA', 'CONAMA', 'UE'],
+            'PM2.5 (24h)': [25, 35, 60, 25],
+            'PM10 (24h)': [50, 150, 150, 50]
+        }
+        
+        standards_df = pd.DataFrame(standards_data)
+        
+        if not hist_data.empty:
+            # Adicionar colunas de comparação
+            latest_pm25 = hist_data['pm25'].iloc[-1]
+            latest_pm10 = hist_data['pm10'].iloc[-1]
+            
+            standards_df['Status PM2.5'] = standards_df['PM2.5 (24h)'].apply(
+                lambda x: '✅' if latest_pm25 <= x else '⚠️'
+            )
+            standards_df['Status PM10'] = standards_df['PM10 (24h)'].apply(
+                lambda x: '✅' if latest_pm10 <= x else '⚠️'
+            )
+        
+        st.dataframe(standards_df, use_container_width=True)
+        
+        # Informações adicionais
+        with st.expander("📋 Legenda e Informações Adicionais"):
+            st.markdown("""
+            **Legenda:**
+            - ✅: Dentro do limite
+            - ⚠️: Acima do limite
+            
+            **Notas:**
+            - **OMS:** Organização Mundial da Saúde
+            - **EPA:** Agência de Proteção Ambiental dos EUA
+            - **CONAMA:** Conselho Nacional do Meio Ambiente (Brasil)
+            - **UE:** União Europeia
+            
+            **Observação:** Os limites são para médias de 24 horas. Valores instantâneos podem variar.
+            """)
+    else:
+        st.warning("Dados insuficientes para análise detalhada.")
+            
     except Exception as e:
         st.error(f"❌ Erro durante a análise: {str(e)}")
-        import traceback
-        st.code(traceback.format_exc())
 
 # Rodapé informativo
 st.markdown("---")
@@ -1611,28 +1204,6 @@ st.markdown("""
 - Processamento: Sistema desenvolvido para monitoramento ambiental de MS
 
 **Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
-""")
 
-# Informações de contato/suporte
-with st.expander("📞 Suporte e Informações Técnicas"):
-    st.markdown("""
-    ### Suporte Técnico
-    
-    **Parâmetros do Sistema:**
-    - Resolução espacial: ~0.4° x 0.4° (≈ 44 km)
-    - Resolução temporal: 3 horas
-    - Previsão: Até 5 dias
-    - Variáveis principais: PM2.5 e PM10 diretos
-    
-    **Vantagens dos Dados Diretos:**
-    - Eliminação de incertezas de conversão AOD→PM
-    - Calibração contínua com estações de superfície
-    - Maior precisão para tomada de decisões
-    - Validação internacional
-    
-    **Para Melhor Precisão:**
-    - Use dados de múltiplos pontos temporais
-    - Considere condições meteorológicas locais
-    - Valide com medições locais quando disponível
-    - Monitore tendências de longo prazo
-    """)
+**Aviso:** Este sistema é uma ferramenta de apoio à decisão e não substitui monitoramento oficial.
+""")

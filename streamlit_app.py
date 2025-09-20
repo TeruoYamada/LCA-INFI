@@ -18,6 +18,227 @@ from sklearn.linear_model import LinearRegression
 import matplotlib.dates as mdates
 from scipy import stats
 
+# Função melhorada para criar mapas de PM2.5 e PM10
+def create_enhanced_pm_maps(ds, pm25_var, pm10_var, city, lat_center, lon_center, ms_shapes, frame_idx=0):
+    """
+    Cria dois mapas (PM2.5 e PM10) um embaixo do outro, 
+    centrados em Mato Grosso do Sul com o município destacado.
+    """
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    import numpy as np
+    import pandas as pd
+    
+    # Configurar figura com dois subplots verticais
+    fig = plt.figure(figsize=(16, 12))
+    
+    # Definir extensão para MS
+    ms_extent = [-58.5, -50.5, -24.5, -17.0]  # [west, east, south, north]
+    
+    # Subplot 1: PM2.5
+    ax1 = fig.add_subplot(2, 1, 1, projection=ccrs.PlateCarree())
+    ax1.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.3)
+    ax1.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.3)
+    ax1.add_feature(cfeature.COASTLINE, linewidth=0.5)
+    ax1.add_feature(cfeature.BORDERS, linewidth=0.8, color='black')
+    ax1.add_feature(cfeature.STATES.with_scale('50m'), linewidth=1, edgecolor='darkgray')
+    
+    # Configurar grade
+    gl1 = ax1.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.7, linestyle='--')
+    gl1.top_labels = False
+    gl1.right_labels = False
+    
+    # Definir extensão
+    ax1.set_extent(ms_extent, crs=ccrs.PlateCarree())
+    
+    # Plotar dados de PM2.5
+    try:
+        da_pm25 = ds[pm25_var]
+        
+        # Converter unidades se necessário
+        if da_pm25.max().values < 1:
+            da_pm25 = da_pm25 * 1e9
+        
+        # Obter frame específico
+        if 'forecast_reference_time' in da_pm25.dims and 'forecast_period' in da_pm25.dims:
+            frame_data = da_pm25.isel(forecast_reference_time=0, forecast_period=min(frame_idx, len(da_pm25.forecast_period)-1)).values
+            frame_time = pd.to_datetime(ds.forecast_reference_time.values[0])
+        else:
+            time_dims = [d for d in da_pm25.dims if 'time' in d or 'forecast' in d]
+            if time_dims:
+                time_dim = time_dims[0]
+                frame_data = da_pm25.isel({time_dim: min(frame_idx, len(da_pm25[time_dim])-1)}).values
+                frame_time = pd.to_datetime(da_pm25[time_dim].values[min(frame_idx, len(da_pm25[time_dim])-1)])
+            else:
+                frame_data = da_pm25.values
+                frame_time = pd.to_datetime('now')
+        
+        # Definir limites de cores para PM2.5
+        vmin_pm25 = max(0, np.nanmin(frame_data))
+        vmax_pm25 = min(150, np.nanpercentile(frame_data, 95))
+        
+        # Plotar PM2.5
+        im1 = ax1.pcolormesh(ds.longitude, ds.latitude, frame_data, 
+                            cmap='YlOrRd', vmin=vmin_pm25, vmax=vmax_pm25, 
+                            transform=ccrs.PlateCarree(), alpha=0.8)
+        
+        # Barra de cores para PM2.5
+        cbar1 = plt.colorbar(im1, ax=ax1, orientation='horizontal', 
+                            fraction=0.046, pad=0.08, shrink=0.8)
+        cbar1.set_label('PM2.5 (μg/m³)', fontsize=12)
+        
+    except Exception as e:
+        print(f"Erro ao plotar PM2.5: {e}")
+        im1 = None
+    
+    # Adicionar shapefile de MS se disponível
+    if ms_shapes is not None and not ms_shapes.empty:
+        try:
+            ms_shapes.boundary.plot(ax=ax1, color='black', linewidth=0.8, transform=ccrs.PlateCarree())
+            
+            # Destacar município selecionado
+            selected_city = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+            if not selected_city.empty:
+                selected_city.plot(ax=ax1, facecolor='none', edgecolor='red', 
+                                 linewidth=3.0, transform=ccrs.PlateCarree())
+        except Exception as e:
+            print(f"Erro ao plotar shapefile no PM2.5: {e}")
+    
+    # Marcar cidade
+    ax1.plot(lon_center, lat_center, marker='o', markersize=12, 
+             markerfacecolor='red', markeredgecolor='white', markeredgewidth=2,
+             transform=ccrs.PlateCarree(), zorder=10)
+    
+    # Título do primeiro mapa
+    ax1.set_title(f'PM2.5 - {city.upper()}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
+                  fontsize=16, fontweight='bold', pad=20)
+    
+    # Subplot 2: PM10
+    ax2 = fig.add_subplot(2, 1, 2, projection=ccrs.PlateCarree())
+    ax2.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.3)
+    ax2.add_feature(cfeature.OCEAN, facecolor='lightblue', alpha=0.3)
+    ax2.add_feature(cfeature.COASTLINE, linewidth=0.5)
+    ax2.add_feature(cfeature.BORDERS, linewidth=0.8, color='black')
+    ax2.add_feature(cfeature.STATES.with_scale('50m'), linewidth=1, edgecolor='darkgray')
+    
+    # Configurar grade
+    gl2 = ax2.gridlines(draw_labels=True, linewidth=0.5, color='gray', alpha=0.7, linestyle='--')
+    gl2.top_labels = False
+    gl2.right_labels = False
+    
+    # Definir extensão
+    ax2.set_extent(ms_extent, crs=ccrs.PlateCarree())
+    
+    # Plotar dados de PM10
+    try:
+        da_pm10 = ds[pm10_var]
+        
+        # Converter unidades se necessário
+        if da_pm10.max().values < 1:
+            da_pm10 = da_pm10 * 1e9
+        
+        # Obter frame específico
+        if 'forecast_reference_time' in da_pm10.dims and 'forecast_period' in da_pm10.dims:
+            frame_data_pm10 = da_pm10.isel(forecast_reference_time=0, forecast_period=min(frame_idx, len(da_pm10.forecast_period)-1)).values
+        else:
+            time_dims = [d for d in da_pm10.dims if 'time' in d or 'forecast' in d]
+            if time_dims:
+                time_dim = time_dims[0]
+                frame_data_pm10 = da_pm10.isel({time_dim: min(frame_idx, len(da_pm10[time_dim])-1)}).values
+            else:
+                frame_data_pm10 = da_pm10.values
+        
+        # Definir limites de cores para PM10
+        vmin_pm10 = max(0, np.nanmin(frame_data_pm10))
+        vmax_pm10 = min(300, np.nanpercentile(frame_data_pm10, 95))
+        
+        # Plotar PM10
+        im2 = ax2.pcolormesh(ds.longitude, ds.latitude, frame_data_pm10, 
+                            cmap='Oranges', vmin=vmin_pm10, vmax=vmax_pm10, 
+                            transform=ccrs.PlateCarree(), alpha=0.8)
+        
+        # Barra de cores para PM10
+        cbar2 = plt.colorbar(im2, ax=ax2, orientation='horizontal', 
+                            fraction=0.046, pad=0.08, shrink=0.8)
+        cbar2.set_label('PM10 (μg/m³)', fontsize=12)
+        
+    except Exception as e:
+        print(f"Erro ao plotar PM10: {e}")
+        im2 = None
+    
+    # Adicionar shapefile de MS
+    if ms_shapes is not None and not ms_shapes.empty:
+        try:
+            ms_shapes.boundary.plot(ax=ax2, color='black', linewidth=0.8, transform=ccrs.PlateCarree())
+            
+            # Destacar município selecionado
+            selected_city = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+            if not selected_city.empty:
+                selected_city.plot(ax=ax2, facecolor='none', edgecolor='red', 
+                                 linewidth=3.0, transform=ccrs.PlateCarree())
+        except Exception as e:
+            print(f"Erro ao plotar shapefile no PM10: {e}")
+    
+    # Marcar cidade
+    ax2.plot(lon_center, lat_center, marker='o', markersize=12, 
+             markerfacecolor='red', markeredgecolor='white', markeredgewidth=2,
+             transform=ccrs.PlateCarree(), zorder=10)
+    
+    # Título do segundo mapa
+    ax2.set_title(f'PM10 - {city.upper()}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}', 
+                  fontsize=16, fontweight='bold', pad=20)
+    
+    # Ajustar layout
+    plt.tight_layout()
+    
+    # Adicionar linhas de referência nos limites OMS/EPA
+    try:
+        # Para PM2.5: linhas de referência em 25 e 35 μg/m³
+        if im1 is not None:
+            # Adicionar texto explicativo
+            ax1.text(0.02, 0.98, 'Limites: OMS=25 μg/m³, EPA=35 μg/m³', 
+                    transform=ax1.transAxes, fontsize=10, 
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                    verticalalignment='top')
+        
+        # Para PM10: linhas de referência em 50 e 150 μg/m³
+        if im2 is not None:
+            ax2.text(0.02, 0.98, 'Limites: OMS=50 μg/m³, EPA=150 μg/m³', 
+                    transform=ax2.transAxes, fontsize=10, 
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
+                    verticalalignment='top')
+    except Exception as e:
+        print(f"Erro ao adicionar texto de referência: {e}")
+    
+    return fig
+
+# Função para integrar na análise principal
+def create_enhanced_static_maps(results, city, lat_center, lon_center, ms_shapes, start_date):
+    """
+    Cria mapas estáticos melhorados e salva como arquivo.
+    """
+    try:
+        ds = results['dataset']
+        pm25_var = results['pm25_var']
+        pm10_var = results['pm10_var']
+        
+        # Criar mapas melhorados
+        enhanced_fig = create_enhanced_pm_maps(
+            ds, pm25_var, pm10_var, city, lat_center, lon_center, ms_shapes, frame_idx=0
+        )
+        
+        # Salvar mapa
+        enhanced_map_filename = f'Enhanced_PM_Maps_{city}_{start_date}.png'
+        enhanced_fig.savefig(enhanced_map_filename, dpi=300, bbox_inches='tight')
+        plt.close(enhanced_fig)
+        
+        return enhanced_map_filename
+        
+    except Exception as e:
+        print(f"Erro ao criar mapas melhorados: {e}")
+        return None
+
 # Configuração inicial da página
 st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_icon="🌍")
 
@@ -53,6 +274,7 @@ def load_ms_municipalities():
         st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
         return create_fallback_shapefile()
 
+# [AQUI VOCÊ COLA SUA LISTA DE CIDADES]
 cities = {
     "Água Clara": [-20.4453, -52.8792],
     "Alcinópolis": [-18.3255, -53.7042],
@@ -135,7 +357,6 @@ cities = {
     "Vicentina": [-22.4098, -54.4415]
 }
 
-
 def create_fallback_shapefile():
     """Cria um shapefile simplificado caso o oficial falhe"""
     # Criar polígonos aproximados para alguns municípios principais
@@ -158,229 +379,6 @@ def create_fallback_shapefile():
         })
     
     return gpd.GeoDataFrame(municipalities_data, crs="EPSG:4326")
-
-# Função para criar mapa com contexto estadual (nova função)
-
-def plot_municipality_with_shape(ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0,
-                                figsize=(12,8), buffer_km_deg=0.8):
-    """Cria um mapa com:
-       - Contexto: Estado de Mato Grosso do Sul (lado esquerdo)
-       - Detalhe: município escolhido com contorno (lado direito)
-       O título com o nome do município fica acima da figura.
-    """
-
-    import matplotlib.pyplot as plt
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    import numpy as np
-
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.3], wspace=0.12)
-
-    # --- Mapa de contexto: Mato Grosso do Sul ---
-    ax0 = fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree())
-    ax0.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.6)
-    ax0.add_feature(cfeature.COASTLINE, linewidth=0.5)
-    ax0.add_feature(cfeature.BORDERS, linewidth=0.5)
-
-    if ms_shapes is not None and not ms_shapes.empty:
-        try:
-            ms_shapes.boundary.plot(ax=ax0, color='gray', linewidth=0.5, transform=ccrs.PlateCarree())
-            selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
-            if not selected.empty:
-                selected.plot(ax=ax0, facecolor='none', edgecolor='red', linewidth=2.0, transform=ccrs.PlateCarree())
-        except Exception:
-            pass
-
-    # Enfoque no estado do MS (limites aproximados)
-    ax0.set_extent([-58.5, -50.5, -24.5, -17.0], crs=ccrs.PlateCarree())
-    ax0.set_title('Mato Grosso do Sul', fontsize=10)
-
-    # --- Mapa detalhado: Município ---
-    ax1 = fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree())
-    ax1.add_feature(cfeature.LAND, facecolor='lightgray')
-    ax1.add_feature(cfeature.COASTLINE, linewidth=0.4)
-    ax1.add_feature(cfeature.BORDERS, linestyle=':', linewidth=0.4)
-
-    buffer = buffer_km_deg
-    ax1.set_extent([lon_center - buffer, lon_center + buffer, lat_center - buffer, lat_center + buffer], crs=ccrs.PlateCarree())
-
-    try:
-        da = ds[pm25_var]
-        if 'forecast_reference_time' in da.dims and 'forecast_period' in da.dims:
-            frame = da.isel(forecast_reference_time=0, forecast_period=frame_idx).values
-        else:
-            time_dims = [d for d in da.dims if 'time' in d or 'forecast' in d]
-            td = time_dims[0] if time_dims else da.dims[0]
-            frame = da.isel({td: frame_idx}).values
-
-        vmin, vmax = np.nanmin(frame), np.nanpercentile(frame, 97)
-        im = ax1.pcolormesh(ds.longitude, ds.latitude, frame, cmap='YlOrRd',
-                            vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), alpha=0.85)
-    except Exception:
-        im = None
-
-    if ms_shapes is not None and not ms_shapes.empty:
-        selected = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
-        if not selected.empty:
-            try:
-                selected.plot(ax=ax1, facecolor='none', edgecolor='red', linewidth=2.0, transform=ccrs.PlateCarree())
-            except Exception:
-                pass
-
-    ax1.plot(lon_center, lat_center, marker='o', markersize=8,
-             markeredgecolor='white', markerfacecolor='black', transform=ccrs.PlateCarree())
-
-    fig.suptitle(f"{city.upper()}", fontsize=16, fontweight='bold', y=0.98)
-
-    try:
-        if im is not None and 'frame_time' in locals():
-            ax1.set_title(f"{frame_time.strftime('%d/%m/%Y %H:%M UTC')}", fontsize=10)
-        elif im is not None:
-            ax1.set_title('', fontsize=10)
-    except Exception:
-        ax1.set_title('', fontsize=10)
-
-    if im is not None:
-        cax = fig.add_axes([0.62, 0.07, 0.28, 0.03])
-        cb = plt.colorbar(im, cax=cax, orientation='horizontal')
-        cb.set_label('Concentração PM2.5 (μg/m³)')
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    return fig
-
-
-# Modificar a função principal de análise para usar o novo mapa
-def generate_pm_analysis_with_enhanced_map():
-    dataset = "cams-global-atmospheric-composition-forecasts"
-    
-    start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_str = end_date.strftime('%Y-%m-%d')
-    
-    hours = []
-    current_hour = start_hour
-    while True:
-        hours.append(f"{current_hour:02d}:00")
-        if current_hour == end_hour:
-            break
-        current_hour = (current_hour + 3) % 24
-        if current_hour == start_hour:
-            break
-    
-    if not hours:
-        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
-    
-    # Área de interesse centrada no município com buffer
-    buffer = 1.5
-    city_bounds = {
-        'north': lat_center + buffer,
-        'south': lat_center - buffer,
-        'east': lon_center + buffer,
-        'west': lon_center - buffer
-    }
-    
-    # Requisição padrão
-    request = {
-        'variable': [
-            'particulate_matter_2.5um',
-            'particulate_matter_10um'
-        ],
-        'date': f'{start_date_str}/{end_date_str}',
-        'time': hours,
-        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
-        'type': ['forecast'],
-        'format': 'netcdf',
-        'area': [city_bounds['north'], city_bounds['west'], 
-                city_bounds['south'], city_bounds['east']]
-    }
-    
-    filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.nc'
-    
-    try:
-        with st.spinner('📥 Baixando dados de PM2.5 e PM10 do CAMS...'):
-            client.retrieve(dataset, request).download(filename)
-        
-        ds = xr.open_dataset(filename)
-        
-        # Identificar variáveis
-        variable_names = list(ds.data_vars)
-        pm25_var = next((var for var in variable_names if 'pm2p5' in var.lower() or '2.5' in var), None)
-        pm10_var = next((var for var in variable_names if 'pm10' in var.lower() or '10um' in var), None)
-        
-        if not pm25_var or not pm10_var:
-            st.error("Variáveis de PM2.5 ou PM10 não encontradas nos dados.")
-            return None
-        
-        # Extrair série temporal
-        with st.spinner("Extraindo dados de PM para o município..."):
-            df_timeseries = extract_pm_timeseries(ds, lat_center, lon_center, pm25_var, pm10_var)
-        
-        if df_timeseries.empty:
-            st.error("Não foi possível extrair série temporal para este local.")
-            return None
-        
-        # Gerar previsão
-        with st.spinner("Gerando previsões..."):
-            df_forecast = predict_future_values(df_timeseries, days=5)
-        
-        # Criar mapa estático com contexto estadual
-        with st.spinner('🗺️ Criando mapa contextualizado...'):
-            enhanced_map_fig = create_enhanced_map_with_context(
-                ds, pm25_var, city, lat_center, lon_center, ms_shapes, frame_idx=0
-            )
-            
-            # Salvar mapa estático
-            static_map_filename = f'Enhanced_Map_{city}_{start_date}.png'
-            enhanced_map_fig.savefig(static_map_filename, dpi=300, bbox_inches='tight')
-            plt.close(enhanced_map_fig)
-        
-        # Criar animação original (opcional - pode ser mantida)
-        da_pm25 = ds[pm25_var]
-        if da_pm25.max().values < 1:
-            da_pm25 = da_pm25 * 1e9
-        
-        # [Resto do código da animação permanece igual...]
-        # ... (código da animação original)
-        
-        # Retornar resultados incluindo o mapa contextualizado
-        return {
-            'enhanced_map': static_map_filename,
-            'timeseries': df_timeseries,
-            'forecast': df_forecast,
-            'dataset': ds,
-            'pm25_var': pm25_var,
-            'pm10_var': pm10_var
-        }
-        
-    except Exception as e:
-        st.error(f"❌ Erro ao processar os dados: {str(e)}")
-        return None
-
-# Modificação na interface para mostrar o mapa contextualizado
-# (Na parte onde os resultados são exibidos, substituir a aba do mapa por:)
-    
-    # Informações técnicas sobre os dados
-    with st.expander("ℹ️ Informações Técnicas dos Mapas"):
-        st.markdown("""
-        ### Metodologia de Mapeamento
-        
-        **Dados Utilizados:**
-        - Fonte: CAMS (Copernicus Atmosphere Monitoring Service)
-        - Variável: particulate_matter_2.5um (PM2.5 direta)
-        - Resolução espacial: ~0.4° x 0.4° (~44 km)
-        - Resolução temporal: 3 horas
-        
-        **Shapefiles:**
-        - Municípios de MS: IBGE 2022
-        - Projeção: PlateCarree (Geographic)
-        - Sistema de coordenadas: EPSG:4326
-        
-        **Visualização:**
-        - Mapa estadual: Localização contextual
-        - Mapa local: Concentrações detalhadas
-        - Escala de cores: YlOrRd (Amarelo-Laranja-Vermelho)
-        - Níveis de qualidade baseados em padrões EPA/OMS
-        """)
 
 # Títulos e introdução
 st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
@@ -850,6 +848,13 @@ def generate_pm_analysis():
         
         plt.close(fig)
 
+        # Criar mapas estáticos melhorados
+        with st.spinner('🗺️ Criando mapas melhorados de PM2.5 e PM10...'):
+            enhanced_map_filename = create_enhanced_static_maps(
+                {'dataset': ds, 'pm25_var': pm25_var, 'pm10_var': pm10_var}, 
+                city, lat_center, lon_center, ms_shapes, start_date
+            )
+
         # Analisar todas as cidades (usando dados de MS completo se disponível)
         top_pollution_cities = None
         try:
@@ -896,6 +901,7 @@ def generate_pm_analysis():
         
         return {
             'animation': gif_filename,
+            'enhanced_maps': enhanced_map_filename,
             'timeseries': df_timeseries,
             'forecast': df_forecast,
             'dataset': ds,
@@ -962,27 +968,56 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
             
             # Aba do Mapa
             with tab3:
-                st.subheader(f"🎬 Animação PM2.5 - {city}")
-                st.image(results['animation'], caption=f"Evolução temporal do PM2.5 em {city} ({start_date} a {end_date})")
+                st.subheader(f"🗺️ Mapas de PM2.5 e PM10 - {city}")
                 
-                with open(results['animation'], "rb") as file:
-                    btn = st.download_button(
-                        label="⬇️ Baixar Animação (GIF)",
-                        data=file,
-                        file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
-                        mime="image/gif"
-                    )
+                # Mostrar mapas melhorados se disponível
+                if 'enhanced_maps' in results and results['enhanced_maps']:
+                    st.image(results['enhanced_maps'], 
+                            caption=f"Concentrações de PM2.5 e PM10 em Mato Grosso do Sul - Foco em {city}")
+                    
+                    # Botão de download do mapa estático
+                    try:
+                        with open(results['enhanced_maps'], "rb") as file:
+                            st.download_button(
+                                label="⬇️ Baixar Mapas (PNG)",
+                                data=file,
+                                file_name=f"PM25_PM10_Maps_{city}_{start_date}.png",
+                                mime="image/png"
+                            )
+                    except:
+                        pass
                 
-                # Informações sobre o mapa
+                # Animação original (opcional)
+                with st.expander("🎬 Ver Animação Temporal PM2.5"):
+                    st.image(results['animation'], 
+                            caption=f"Evolução temporal do PM2.5 em {city} ({start_date} a {end_date})")
+                    
+                    with open(results['animation'], "rb") as file:
+                        st.download_button(
+                            label="⬇️ Baixar Animação (GIF)",
+                            data=file,
+                            file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
+                            mime="image/gif"
+                        )
+                
+                # Informações interpretativas
                 st.info(f"""
-                **Como interpreter o mapa de {city}:**
-                - 🟢 Verde: PM2.5 < 12 μg/m³ (Boa qualidade)
-                - 🟡 Amarelo: PM2.5 12-35 μg/m³ (Moderada)
-                - 🟠 Laranja: PM2.5 35-55 μg/m³ (Insalubre para sensíveis)
-                - 🔴 Vermelho: PM2.5 > 55 μg/m³ (Insalubre)
+                **Como interpretar os mapas de {city}:**
                 
-                O ponto vermelho marca a localização de **{city}**.
-                Dados obtidos diretamente do CAMS (sem conversão de AOD).
+                **PM2.5 (Mapa Superior - Escala Vermelha):**
+                - 🟢 Verde: < 12 μg/m³ (Boa qualidade)
+                - 🟡 Amarelo: 12-25 μg/m³ (Moderada)
+                - 🟠 Laranja: 25-35 μg/m³ (Limite OMS excedido)
+                - 🔴 Vermelho: > 35 μg/m³ (Insalubre)
+                
+                **PM10 (Mapa Inferior - Escala Laranja):**
+                - 🟢 Verde: < 25 μg/m³ (Boa qualidade)
+                - 🟡 Amarelo: 25-50 μg/m³ (Moderada)
+                - 🟠 Laranja: 50-150 μg/m³ (Limite OMS excedido)
+                - 🔴 Vermelho: > 150 μg/m³ (Insalubre)
+                
+                📍 O ponto vermelho marca a localização de **{city}**.
+                🔴 Contorno vermelho destaca os limites do município.
                 """)
             
             # Aba de Análise do Município

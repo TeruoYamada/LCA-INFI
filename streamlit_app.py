@@ -806,7 +806,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                 # Botão de download PM2.5
                 with open(results['animation_pm25'], "rb") as file:
                     st.download_button(
-                        label="Baixar Animação PM2.5 (GIF)",
+                        label="⬇️ Baixar Animação PM2.5 (GIF)",
                         data=file,
                         file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
                         mime="image/gif"
@@ -814,14 +814,14 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                 
                 # Animação PM10 (se solicitada)
                 if results['animation_pm10']:
-                    st.markdown("### Evolução Temporal - PM10")
+                    st.markdown("### 📊 Evolução Temporal - PM10")
                     st.image(results['animation_pm10'], 
                             caption=f"Evolução temporal do PM10 em {city} com contornos municipais destacados ({start_date} a {end_date})")
                     
                     # Botão de download PM10
                     with open(results['animation_pm10'], "rb") as file:
                         st.download_button(
-                            label="Baixar Animação PM10 (GIF)",
+                            label="⬇️ Baixar Animação PM10 (GIF)",
                             data=file,
                             file_name=f"PM10_{city}_{start_date}_to_{end_date}.gif",
                             mime="image/gif"
@@ -854,7 +854,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
             
             # Aba de Análise do Município
             with tab1:
-                st.subheader(f"Análise Detalhada - {city}")
+                st.subheader(f"📊 Análise Detalhada - {city}")
                 
                 col1, col2 = st.columns([3, 2])
                 
@@ -918,7 +918,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     st.pyplot(fig)
                 
                 with col2:
-                    st.subheader("Estatísticas Atuais")
+                    st.subheader("📈 Estatísticas Atuais")
                     
                     if not hist_data.empty:
                         curr_pm25 = hist_data['pm25'].iloc[-1]
@@ -957,7 +957,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                             st.error("☠️ Evite todas as atividades ao ar livre")
                         
                         # Comparação com limites
-                        st.subheader("Comparação com Padrões")
+                        st.subheader("📏 Comparação com Padrões")
                         
                         pm25_who_limit = 25
                         pm10_who_limit = 50
@@ -990,10 +990,10 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                                 """, unsafe_allow_html=True)
                     
                     # Exportar dados
-                    st.subheader("Exportar Dados")
+                    st.subheader("💾 Exportar Dados")
                     csv = df_combined.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label="Baixar Dados Completos (CSV)",
+                        label="⬇️ Baixar Dados Completos (CSV)",
                         data=csv,
                         file_name=f"PM_data_{city}_{start_date}_to_{end_date}.csv",
                         mime="text/csv",
@@ -1001,7 +1001,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
             
             # Aba de Alertas
             with tab2:
-                st.subheader("Alerta de Qualidade do Ar - Mato Grosso do Sul")
+                st.subheader("⚠️ Alerta de Qualidade do Ar - Mato Grosso do Sul")
                 
                 if 'top_pollution' in results and not results['top_pollution'].empty:
                     top_cities = results['top_pollution'].head(20)
@@ -1017,7 +1017,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     
                     if len(critical_cities) > 0:
                         st.error(f"""
-                        ### ALERTA DE QUALIDADE DO AR
+                        ### 🚨 ALERTA DE QUALIDADE DO AR
                         
                         **{len(critical_cities)} municípios** com previsão de qualidade do ar 
                         inadequada nos próximos 5 dias!
@@ -1029,7 +1029,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                         """)
                     
                     # Tabela completa
-                    st.markdown("### Ranking de Qualidade do Ar por Município")
+                    st.markdown("### 📊 Ranking de Qualidade do Ar por Município")
                     
                     # Renomear colunas
                     top_cities_display = top_cities.rename(columns={
@@ -1064,7 +1064,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     )
                     
                     # Gráfico dos 10 municípios mais críticos
-                    st.subheader("Material Particulado - 10 Municípios Mais Críticos")
+                    st.subheader("📊 Material Particulado - 10 Municípios Mais Críticos")
                     
                     fig, ax = plt.subplots(1, 1, figsize=(14, 8))
                     
@@ -1107,7 +1107,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     # Download dos dados
                     csv_alert = top_cities.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label="Baixar Dados de Alerta (CSV)",
+                        label="⬇️ Baixar Dados de Alerta (CSV)",
                         data=csv_alert,
                         file_name=f"Alerta_Qualidade_Ar_MS_{start_date}_to_{end_date}.csv",
                         mime="text/csv",
@@ -1117,10 +1117,10 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
             
             # Aba de análise detalhada
             with tab4:
-                st.subheader("Análise Detalhada de Material Particulado")
+                st.subheader("📈 Análise Detalhada de Material Particulado")
                 
                 # Informações sobre dados diretos do CAMS
-                with st.expander("Sobre os Dados Diretos do CAMS"):
+                with st.expander("ℹ️ Sobre os Dados Diretos do CAMS"):
                     st.markdown("""
                     ### Dados Diretos de PM2.5 e PM10 do CAMS
                     
@@ -1128,10 +1128,10 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     fornecidos pelo CAMS (Copernicus Atmosphere Monitoring Service):
                     
                     **Vantagens dos dados diretos:**
-                    -Maior precisão: Sem necessidade de conversão de AOD
-                    -Validação contínua: Dados calibrados com estações de monitoramento
-                    -Resolução temporal: Dados a cada 3 horas
-                    -Cobertura global: Disponível para todo o território brasileiro
+                    - ✅ Maior precisão: Sem necessidade de conversão de AOD
+                    - ✅ Validação contínua: Dados calibrados com estações de monitoramento
+                    - ✅ Resolução temporal: Dados a cada 3 horas
+                    - ✅ Cobertura global: Disponível para todo o território brasileiro
                     
                     **Características técnicas:**
                     - **Resolução espacial**: ~0.4° x 0.4° (≈ 44 km)
@@ -1157,7 +1157,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                         col1, col2 = st.columns(2)
                         
                         with col1:
-                            st.subheader("Estatísticas Históricas")
+                            st.subheader("📊 Estatísticas Históricas")
                             
                             # Métricas estatísticas
                             stats_data = {
@@ -1210,7 +1210,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                                 st.write(f"**PM10**: {trend_pm10} (R² = {r_pm10**2:.3f})")
                         
                         with col2:
-                            st.subheader(" Distribuição dos Valores")
+                            st.subheader("🎯 Distribuição dos Valores")
                             
                             # Histogramas
                             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
@@ -1271,7 +1271,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
 # Rodapé informativo
 st.markdown("---")
 st.markdown("""
-### ℹInformações Importantes
+### ℹ️ Informações Importantes
 
 **Sobre os Dados Diretos:**
 - As concentrações de PM2.5/PM10 são obtidas diretamente do CAMS, sem conversões
@@ -1279,10 +1279,10 @@ st.markdown("""
 - Precisão superior aos métodos de conversão de AOD
 
 **Novidades desta versão:**
-- Contornos municipais destacados nas animações
-- Município selecionado evidenciado em vermelho
-- Animações separadas para PM2.5 e PM10
-- Visualização focada no estado de Mato Grosso do Sul
+- 🗺️ Contornos municipais destacados nas animações
+- 🎯 Município selecionado evidenciado em vermelho
+- 🎬 Animações separadas para PM2.5 e PM10
+- 📊 Visualização focada no estado de Mato Grosso do Sul
 
 **Dados Fornecidos por:**
 - CAMS (Copernicus Atmosphere Monitoring Service) - União Europeia
@@ -1292,7 +1292,7 @@ st.markdown("""
 """)
 
 # Informações de contato/suporte
-with st.expander("Suporte e Informações Técnicas"):
+with st.expander("📞 Suporte e Informações Técnicas"):
     st.markdown("""
     ### Suporte Técnico
     

@@ -108,12 +108,6 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
     ax.plot(lon_center, lat_center, 'ro', markersize=12, transform=ccrs.PlateCarree(), 
             markeredgecolor='white', markeredgewidth=2, zorder=10)
     
-    # Título com o nome do município
-    ax.text(lon_center, ms_extent[3] + 0.3, city.upper(), 
-            transform=ccrs.PlateCarree(), fontsize=18, fontweight='bold',
-            ha='center', va='bottom', bbox=dict(boxstyle='round,pad=0.5', 
-            facecolor='white', alpha=0.9, edgecolor='black'))
-    
     # Obter primeiro frame
     if 'forecast_period' in da_pm.dims and 'forecast_reference_time' in da_pm.dims:
         first_frame_data = da_pm.isel(forecast_period=0, forecast_reference_time=0).values
@@ -1327,3 +1321,4 @@ with st.expander("📞 Suporte e Informações Técnicas"):
     - Valide com medições locais quando disponível
     - Monitore tendências de longo prazo
     """)
+

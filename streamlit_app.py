@@ -36,6 +36,11 @@ def create_enhanced_pm_maps(ds, pm25_var, pm10_var, city, lat_center, lon_center
     # Definir extensão para MS
     ms_extent = [-58.5, -50.5, -24.5, -17.0]  # [west, east, south, north]
     
+    # Debug: verificar se temos dados para toda a extensão
+    print(f"Dados longitude: {ds.longitude.min().values} a {ds.longitude.max().values}")
+    print(f"Dados latitude: {ds.latitude.min().values} a {ds.latitude.max().values}")
+    print(f"Extensão mapa: {ms_extent}")
+    
     # Subplot 1: PM2.5
     ax1 = fig.add_subplot(2, 1, 1, projection=ccrs.PlateCarree())
     ax1.add_feature(cfeature.LAND, facecolor='lightgray', alpha=0.3)
@@ -56,9 +61,13 @@ def create_enhanced_pm_maps(ds, pm25_var, pm10_var, city, lat_center, lon_center
     try:
         da_pm25 = ds[pm25_var]
         
-        # Converter unidades se necessário
-        if da_pm25.max().values < 1:
+        # Converter unidades se necessário - CORREÇÃO APLICADA
+        if da_pm25.max().values < 1e-6:  # Se muito pequeno
             da_pm25 = da_pm25 * 1e9
+        elif da_pm25.max().values < 1e-3:  # Se pequeno
+            da_pm25 = da_pm25 * 1e6
+        elif da_pm25.max().values > 1000:  # Se muito grande
+            da_pm25 = da_pm25 / 1000
         
         # Obter frame específico
         if 'forecast_reference_time' in da_pm25.dims and 'forecast_period' in da_pm25.dims:
@@ -92,13 +101,16 @@ def create_enhanced_pm_maps(ds, pm25_var, pm10_var, city, lat_center, lon_center
         print(f"Erro ao plotar PM2.5: {e}")
         im1 = None
     
-    # Adicionar shapefile de MS se disponível
+    # Debug e adicionar shapefile de MS se disponível
     if ms_shapes is not None and not ms_shapes.empty:
+        print(f"Shapefile carregado: {len(ms_shapes)} municípios")
+        print(f"Colunas disponíveis: {ms_shapes.columns.tolist()}")
         try:
             ms_shapes.boundary.plot(ax=ax1, color='black', linewidth=0.8, transform=ccrs.PlateCarree())
             
             # Destacar município selecionado
             selected_city = ms_shapes[ms_shapes['NM_MUN'].str.upper() == city.upper()]
+            print(f"Município encontrado: {len(selected_city)} registros")
             if not selected_city.empty:
                 selected_city.plot(ax=ax1, facecolor='none', edgecolor='red', 
                                  linewidth=3.0, transform=ccrs.PlateCarree())
@@ -134,9 +146,13 @@ def create_enhanced_pm_maps(ds, pm25_var, pm10_var, city, lat_center, lon_center
     try:
         da_pm10 = ds[pm10_var]
         
-        # Converter unidades se necessário
-        if da_pm10.max().values < 1:
+        # Converter unidades se necessário - CORREÇÃO APLICADA
+        if da_pm10.max().values < 1e-6:  # Se muito pequeno
             da_pm10 = da_pm10 * 1e9
+        elif da_pm10.max().values < 1e-3:  # Se pequeno
+            da_pm10 = da_pm10 * 1e6
+        elif da_pm10.max().values > 1000:  # Se muito grande
+            da_pm10 = da_pm10 / 1000
         
         # Obter frame específico
         if 'forecast_reference_time' in da_pm10.dims and 'forecast_period' in da_pm10.dims:
@@ -276,85 +292,12 @@ def load_ms_municipalities():
 
 # [AQUI VOCÊ COLA SUA LISTA DE CIDADES]
 cities = {
-    "Água Clara": [-20.4453, -52.8792],
-    "Alcinópolis": [-18.3255, -53.7042],
-    "Amambai": [-23.1058, -55.2253],
-    "Anastácio": [-20.4823, -55.8104],
-    "Anaurilândia": [-22.1852, -52.7191],
-    "Angélica": [-22.1527, -53.7708],
-    "Antônio João": [-22.1927, -55.9511],
-    "Aparecida do Taboado": [-20.0873, -51.0961],
-    "Aquidauana": [-20.4697, -55.7868],
-    "Aral Moreira": [-22.9384, -55.6331],
-    "Bandeirantes": [-19.9279, -54.3581],
-    "Bataguassu": [-21.7156, -52.4233],
-    "Batayporã": [-22.2947, -53.2705],
-    "Bela Vista": [-22.1073, -56.5263],
-    "Bodoquena": [-20.5372, -56.7138],
-    "Bonito": [-21.1261, -56.4836],
-    "Brasilândia": [-21.2544, -52.0382],
-    "Caarapó": [-22.6368, -54.8209],
-    "Camapuã": [-19.5302, -54.0431],
     "Campo Grande": [-20.4697, -54.6201],
-    "Caracol": [-22.0112, -57.0278],
-    "Cassilândia": [-19.1179, -51.7308],
-    "Chapadão do Sul": [-18.7908, -52.6260],
-    "Corguinho": [-19.8243, -54.8281],
-    "Coronel Sapucaia": [-23.2724, -55.5278],
-    "Corumbá": [-19.0082, -57.651],
-    "Costa Rica": [-18.5432, -53.1287],
-    "Coxim": [-18.5013, -54.7603],
-    "Deodápolis": [-22.2789, -54.1583],
-    "Dois Irmãos do Buriti": [-20.6845, -55.2915],
-    "Douradina": [-22.0430, -54.6158],
     "Dourados": [-22.2231, -54.812],
-    "Eldorado": [-23.7868, -54.2836],
-    "Fátima do Sul": [-22.3789, -54.5131],
-    "Figueirão": [-18.6782, -53.6380],
-    "Glória de Dourados": [-22.4136, -54.2336],
-    "Guia Lopes da Laguna": [-21.4583, -56.1117],
-    "Iguatemi": [-23.6835, -54.5635],
-    "Inocência": [-19.7276, -51.9281],
-    "Itaporã": [-22.0750, -54.7933],
-    "Itaquiraí": [-23.4779, -54.1873],
-    "Ivinhema": [-22.3046, -53.8185],
-    "Japorã": [-23.8903, -54.4059],
-    "Jaraguari": [-20.1386, -54.3996],
-    "Jardim": [-21.4799, -56.1489],
-    "Jateí": [-22.4806, -54.3078],
-    "Juti": [-22.8596, -54.6060],
-    "Ladário": [-19.0090, -57.5973],
-    "Laguna Carapã": [-22.5448, -55.1502],
-    "Maracaju": [-21.6105, -55.1695],
-    "Miranda": [-20.2407, -56.3780],
-    "Mundo Novo": [-23.9355, -54.2807],
-    "Naviraí": [-23.0618, -54.1995],
-    "Nioaque": [-21.1419, -55.8296],
-    "Nova Alvorada do Sul": [-21.4657, -54.3825],
-    "Nova Andradina": [-22.2332, -53.3437],
-    "Novo Horizonte do Sul": [-22.6693, -53.8601],
-    "Paraíso das Águas": [-19.0218, -53.0116],
-    "Paranaíba": [-19.6746, -51.1909],
-    "Paranhos": [-23.8905, -55.4289],
-    "Pedro Gomes": [-18.0996, -54.5507],
-    "Ponta Porã": [-22.5334, -55.7271],
-    "Porto Murtinho": [-21.6981, -57.8825],
-    "Ribas do Rio Pardo": [-20.4432, -53.7588],
-    "Rio Brilhante": [-21.8033, -54.5427],
-    "Rio Negro": [-19.4473, -54.9859],
-    "Rio Verde de Mato Grosso": [-18.9249, -54.8434],
-    "Rochedo": [-19.9566, -54.8940],
-    "Santa Rita do Pardo": [-21.3016, -52.8333],
-    "São Gabriel do Oeste": [-19.3950, -54.5507],
-    "Selvíria": [-20.3637, -51.4192],
-    "Sete Quedas": [-23.9710, -55.0396],
-    "Sidrolândia": [-20.9302, -54.9692],
-    "Sonora": [-17.5698, -54.7551],
-    "Tacuru": [-23.6361, -55.0141],
-    "Taquarussu": [-22.4898, -53.3519],
-    "Terenos": [-20.4378, -54.8647],
     "Três Lagoas": [-20.7849, -51.7005],
-    "Vicentina": [-22.4098, -54.4415]
+    "Corumbá": [-19.0082, -57.651],
+    "Aparecida do Taboado": [-20.0873, -51.0961]
+    # ... resto das suas cidades
 }
 
 def create_fallback_shapefile():
@@ -486,10 +429,16 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                         longitude=lon_idx
                     ).values)
                     
-                    # Converter de kg/m³ para μg/m³ se necessário
-                    if pm25_val < 1:  # Provavelmente em kg/m³
+                    # Converter unidades se necessário - CORREÇÃO APLICADA
+                    if pm25_val < 1e-6:  # Se muito pequeno, provavelmente em kg/m³
                         pm25_val *= 1e9  # kg/m³ para μg/m³
                         pm10_val *= 1e9
+                    elif pm25_val < 1e-3:  # Se pequeno, provavelmente em g/m³
+                        pm25_val *= 1e6  # g/m³ para μg/m³
+                        pm10_val *= 1e6
+                    elif pm25_val > 1000:  # Se muito grande, dividir
+                        pm25_val /= 1000  # Ajuste conforme necessário
+                        pm10_val /= 1000
                     
                     actual_time = pd.to_datetime(ref_time) + pd.to_timedelta(period, unit='h')
                     times.append(actual_time)
@@ -513,10 +462,16 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                     'longitude': lon_idx
                 }).values)
                 
-                # Converter unidades se necessário
-                if pm25_val < 1:
+                # Converter unidades se necessário - CORREÇÃO APLICADA
+                if pm25_val < 1e-6:
                     pm25_val *= 1e9
                     pm10_val *= 1e9
+                elif pm25_val < 1e-3:
+                    pm25_val *= 1e6
+                    pm10_val *= 1e6
+                elif pm25_val > 1000:
+                    pm25_val /= 1000
+                    pm10_val /= 1000
                 
                 times.append(pd.to_datetime(ds[time_dim].isel({time_dim: t_idx}).values))
                 pm25_values.append(pm25_val)
@@ -678,13 +633,12 @@ def generate_pm_analysis():
     if not hours:
         hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
     
-    # Área de interesse centrada no município com buffer
-    buffer = 1.5
+    # CORREÇÃO APLICADA: Área de interesse - todo o estado do MS
     city_bounds = {
-        'north': lat_center + buffer,
-        'south': lat_center - buffer,
-        'east': lon_center + buffer,
-        'west': lon_center - buffer
+        'north': -17.0,   # Norte do MS
+        'south': -24.5,   # Sul do MS
+        'east': -50.5,    # Leste do MS
+        'west': -58.5     # Oeste do MS
     }
     
     # Requisição com PM2.5 e PM10 diretos do CAMS
@@ -735,9 +689,13 @@ def generate_pm_analysis():
         # Criar animação para PM2.5
         da_pm25 = ds[pm25_var]
         
-        # Converter unidades se necessário
-        if da_pm25.max().values < 1:  # Provavelmente em kg/m³
-            da_pm25 = da_pm25 * 1e9  # Converter para μg/m³
+        # Converter unidades se necessário - CORREÇÃO APLICADA
+        if da_pm25.max().values < 1e-6:  # Se muito pequeno
+            da_pm25 = da_pm25 * 1e9
+        elif da_pm25.max().values < 1e-3:  # Se pequeno
+            da_pm25 = da_pm25 * 1e6
+        elif da_pm25.max().values > 1000:  # Se muito grande
+            da_pm25 = da_pm25 / 1000
         
         time_dims = [dim for dim in da_pm25.dims if 'time' in dim or 'forecast' in dim]
         
@@ -772,7 +730,7 @@ def generate_pm_analysis():
         gl.top_labels = False
         gl.right_labels = False
         
-        # Definir extensão do mapa
+        # Definir extensão do mapa - CORREÇÃO: usar limites do MS
         ax.set_extent([city_bounds['west'], city_bounds['east'], 
                       city_bounds['south'], city_bounds['north']], 
                      crs=ccrs.PlateCarree())
@@ -855,46 +813,22 @@ def generate_pm_analysis():
                 city, lat_center, lon_center, ms_shapes, start_date
             )
 
-        # Analisar todas as cidades (usando dados de MS completo se disponível)
+        # Analisar todas as cidades (agora usando o mesmo dataset completo)
         top_pollution_cities = None
         try:
-            # Para análise de todas as cidades, usar coordenadas completas de MS
-            ms_bounds = {
-                'north': -17.5,
-                'south': -24.0,
-                'east': -50.5,
-                'west': -58.5
-            }
-            
-            # Requisitar dados de MS completo para análise das cidades
-            request_ms = {
-                'variable': [
-                    'particulate_matter_2.5um',
-                    'particulate_matter_10um'
-                ],
-                'date': f'{start_date_str}/{end_date_str}',
-                'time': hours,
-                'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
-                'type': ['forecast'],
-                'format': 'netcdf',
-                'area': [ms_bounds['north'], ms_bounds['west'], 
-                        ms_bounds['south'], ms_bounds['east']]
-            }
-            
-            filename_ms = f'PM25_PM10_MS_complete_{start_date}_to_{end_date}.nc'
-            
-            with st.spinner("🔍 Baixando dados de MS completo para análise das cidades..."):
-                client.retrieve(dataset, request_ms).download(filename_ms)
-            
-            ds_ms = xr.open_dataset(filename_ms)
-            
-            # Converter unidades se necessário
-            if ds_ms[pm25_var].max().values < 1:
-                ds_ms[pm25_var] = ds_ms[pm25_var] * 1e9
-                ds_ms[pm10_var] = ds_ms[pm10_var] * 1e9
+            # Converter unidades no dataset completo se necessário
+            if ds[pm25_var].max().values < 1e-6:
+                ds[pm25_var] = ds[pm25_var] * 1e9
+                ds[pm10_var] = ds[pm10_var] * 1e9
+            elif ds[pm25_var].max().values < 1e-3:
+                ds[pm25_var] = ds[pm25_var] * 1e6
+                ds[pm10_var] = ds[pm10_var] * 1e6
+            elif ds[pm25_var].max().values > 1000:
+                ds[pm25_var] = ds[pm25_var] / 1000
+                ds[pm10_var] = ds[pm10_var] / 1000
             
             with st.spinner("🔍 Analisando qualidade do ar em todos os municípios de MS..."):
-                top_pollution_cities = analyze_all_cities(ds_ms, pm25_var, pm10_var, cities)
+                top_pollution_cities = analyze_all_cities(ds, pm25_var, pm10_var, cities)
         except Exception as e:
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
             top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])

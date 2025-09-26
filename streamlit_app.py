@@ -448,6 +448,32 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
     else:
         return pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
 
+# Função corrigida para estilizar linhas baseado no IQA
+def get_aqi_color(aqi_value):
+    """Retorna cor CSS baseada no valor do IQA"""
+    if aqi_value <= 50:
+        return '#00e400'  # Verde (Boa)
+    elif aqi_value <= 100:
+        return '#ffff00'  # Amarelo (Moderada)
+    elif aqi_value <= 150:
+        return '#ff7e00'  # Laranja (Insalubre para Sensíveis)
+    elif aqi_value <= 200:
+        return '#ff0000'  # Vermelho (Insalubre)
+    elif aqi_value <= 300:
+        return '#8f3f97'  # Roxo (Muito Insalubre)
+    else:
+        return '#7e0023'  # Vinho (Perigosa)
+
+def style_aqi_table(df):
+    """Aplica estilos condicionais à tabela baseado no IQA"""
+    def apply_styles(row):
+        aqi = row['IQA Máx']
+        bg_color = get_aqi_color(aqi)
+        text_color = 'white' if aqi > 100 else 'black'
+        return [f'background-color: {bg_color}; color: {text_color}'] * len(row)
+    
+    return df.style.apply(apply_styles, axis=1)
+
 # Configuração inicial da página
 st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_icon="🌍")
 
@@ -677,9 +703,14 @@ def generate_pm_analysis():
         
         # Criar animação para PM2.5
         with st.spinner('🎬 Criando animação de PM2.5...'):
-            fig_pm25, animate_pm25, frames_pm25 = create_pm_animation(
+            animation_result = create_pm_animation(
                 ds, pm25_var, city, lat_center, lon_center, ms_shapes, start_date, "PM2.5"
             )
+            
+            if animation_result is None:
+                return None
+                
+            fig_pm25, animate_pm25, frames_pm25 = animation_result
             
             # Criar animação PM2.5
             ani_pm25 = animation.FuncAnimation(fig_pm25, animate_pm25, frames=frames_pm25, 
@@ -694,18 +725,21 @@ def generate_pm_analysis():
         gif_filename_pm10 = None
         if show_pm10_animation:
             with st.spinner('🎬 Criando animação de PM10...'):
-                fig_pm10, animate_pm10, frames_pm10 = create_pm_animation(
+                animation_result_pm10 = create_pm_animation(
                     ds, pm10_var, city, lat_center, lon_center, ms_shapes, start_date, "PM10"
                 )
                 
-                # Criar animação PM10
-                ani_pm10 = animation.FuncAnimation(fig_pm10, animate_pm10, frames=frames_pm10, 
-                                                 interval=animation_speed, blit=True)
-                
-                # Salvar animação PM10
-                gif_filename_pm10 = f'PM10_{city}_{start_date}_to_{end_date}.gif'
-                ani_pm10.save(gif_filename_pm10, writer=animation.PillowWriter(fps=2))
-                plt.close(fig_pm10)
+                if animation_result_pm10 is not None:
+                    fig_pm10, animate_pm10, frames_pm10 = animation_result_pm10
+                    
+                    # Criar animação PM10
+                    ani_pm10 = animation.FuncAnimation(fig_pm10, animate_pm10, frames=frames_pm10, 
+                                                     interval=animation_speed, blit=True)
+                    
+                    # Salvar animação PM10
+                    gif_filename_pm10 = f'PM10_{city}_{start_date}_to_{end_date}.gif'
+                    ani_pm10.save(gif_filename_pm10, writer=animation.PillowWriter(fps=2))
+                    plt.close(fig_pm10)
 
         # Analisar todas as cidades
         top_pollution_cities = None
@@ -743,6 +777,13 @@ def generate_pm_analysis():
         st.write("Detalhes da requisição:")
         st.write(request)
         return None
+    finally:
+        # Limpar arquivo temporário
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
 
 # Carregar shapefiles dos municípios
 with st.spinner("Carregando shapes dos municípios..."):
@@ -800,20 +841,21 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                 
                 # Animação PM2.5
                 st.markdown("### 📊 Evolução Temporal - PM2.5")
-                st.image(results['animation_pm25'], 
-                        caption=f"Evolução temporal do PM2.5 em {city} com contornos municipais destacados ({start_date} a {end_date})")
-                
-                # Botão de download PM2.5
-                with open(results['animation_pm25'], "rb") as file:
-                    st.download_button(
-                        label="⬇️ Baixar Animação PM2.5 (GIF)",
-                        data=file,
-                        file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
-                        mime="image/gif"
-                    )
+                if os.path.exists(results['animation_pm25']):
+                    st.image(results['animation_pm25'], 
+                            caption=f"Evolução temporal do PM2.5 em {city} com contornos municipais destacados ({start_date} a {end_date})")
+                    
+                    # Botão de download PM2.5
+                    with open(results['animation_pm25'], "rb") as file:
+                        st.download_button(
+                            label="⬇️ Baixar Animação PM2.5 (GIF)",
+                            data=file,
+                            file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
+                            mime="image/gif"
+                        )
                 
                 # Animação PM10 (se solicitada)
-                if results['animation_pm10']:
+                if results['animation_pm10'] and os.path.exists(results['animation_pm10']):
                     st.markdown("### 📊 Evolução Temporal - PM10")
                     st.image(results['animation_pm10'], 
                             caption=f"Evolução temporal do PM10 em {city} com contornos municipais destacados ({start_date} a {end_date})")
@@ -869,10 +911,12 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     forecast_data = df_combined[df_combined['type'] == 'forecast']
                     
                     # Gráfico PM2.5
-                    ax1.plot(hist_data['time'], hist_data['pm25'], 
-                           'o-', color='darkblue', label='PM2.5 Observado', markersize=6)
-                    ax1.plot(forecast_data['time'], forecast_data['pm25'], 
-                           'x--', color='red', label='PM2.5 Previsto', markersize=6)
+                    if not hist_data.empty:
+                        ax1.plot(hist_data['time'], hist_data['pm25'], 
+                               'o-', color='darkblue', label='PM2.5 Observado', markersize=6)
+                    if not forecast_data.empty:
+                        ax1.plot(forecast_data['time'], forecast_data['pm25'], 
+                               'x--', color='red', label='PM2.5 Previsto', markersize=6)
                     ax1.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (25 μg/m³)')
                     ax1.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
                     ax1.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
@@ -881,10 +925,12 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     ax1.set_title('Material Particulado PM2.5', fontsize=14)
                     
                     # Gráfico PM10
-                    ax2.plot(hist_data['time'], hist_data['pm10'], 
-                           'o-', color='brown', label='PM10 Observado', markersize=6)
-                    ax2.plot(forecast_data['time'], forecast_data['pm10'], 
-                           'x--', color='darkred', label='PM10 Previsto', markersize=6)
+                    if not hist_data.empty:
+                        ax2.plot(hist_data['time'], hist_data['pm10'], 
+                               'o-', color='brown', label='PM10 Observado', markersize=6)
+                    if not forecast_data.empty:
+                        ax2.plot(forecast_data['time'], forecast_data['pm10'], 
+                               'x--', color='darkred', label='PM10 Previsto', markersize=6)
                     ax2.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
                     ax2.axhline(y=150, color='red', linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
                     ax2.set_ylabel('PM10 (μg/m³)', fontsize=12)
@@ -893,10 +939,12 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     ax2.set_title('Material Particulado PM10', fontsize=14)
                     
                     # Gráfico IQA
-                    ax3.plot(hist_data['time'], hist_data['aqi'], 
-                           'o-', color='purple', label='IQA Observado', markersize=6)
-                    ax3.plot(forecast_data['time'], forecast_data['aqi'], 
-                           'x--', color='magenta', label='IQA Previsto', markersize=6)
+                    if not hist_data.empty:
+                        ax3.plot(hist_data['time'], hist_data['aqi'], 
+                               'o-', color='purple', label='IQA Observado', markersize=6)
+                    if not forecast_data.empty:
+                        ax3.plot(forecast_data['time'], forecast_data['aqi'], 
+                               'x--', color='magenta', label='IQA Previsto', markersize=6)
                     
                     # Zonas de qualidade do ar
                     ax3.axhspan(0, 50, alpha=0.2, color='green', label='Boa')
@@ -981,10 +1029,11 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                             }).reset_index()
                             
                             for _, row in daily_forecast.iterrows():
-                                aqi_color = 'green' if row['aqi'] <= 50 else 'yellow' if row['aqi'] <= 100 else 'orange' if row['aqi'] <= 150 else 'red'
+                                aqi_color = get_aqi_color(row['aqi'])
+                                text_color = 'white' if row['aqi'] > 100 else 'black'
                                 st.markdown(f"""
                                 <div style="padding:5px; border-radius:5px; background-color:{aqi_color}; 
-                                color:{'white' if aqi_color != 'yellow' else 'black'}; margin:2px 0;">
+                                color:{text_color}; margin:2px 0;">
                                 <b>{row['date'].strftime('%d/%m')}:</b> IQA {row['aqi']:.0f} - {row['aqi_category']}
                                 </div>
                                 """, unsafe_allow_html=True)
@@ -1031,7 +1080,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     # Tabela completa
                     st.markdown("### 📊 Ranking de Qualidade do Ar por Município")
                     
-                    # Renomear colunas
+                    # Renomear colunas para exibição
                     top_cities_display = top_cities.rename(columns={
                         'cidade': 'Município',
                         'pm25_max': 'PM2.5 Máx (μg/m³)',
@@ -1041,25 +1090,9 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                         'categoria': 'Categoria'
                     })
                     
-                    # Função para colorir linhas baseado no IQA
-                    def style_aqi_row(row):
-                        aqi = row['IQA Máx']
-                        if aqi <= 50:
-                            return ['background-color: #00e400; color: black'] * len(row)
-                        elif aqi <= 100:
-                            return ['background-color: #ffff00; color: black'] * len(row)
-                        elif aqi <= 150:
-                            return ['background-color: #ff7e00; color: white'] * len(row)
-                        elif aqi <= 200:
-                            return ['background-color: #ff0000; color: white'] * len(row)
-                        elif aqi <= 300:
-                            return ['background-color: #8f3f97; color: white'] * len(row)
-                        else:
-                            return ['background-color: #7e0023; color: white'] * len(row)
-                    
-                    # Exibir tabela estilizada
+                    # Exibir tabela com estilos corrigidos
                     st.dataframe(
-                        top_cities_display.style.apply(style_aqi_row, axis=1),
+                        style_aqi_table(top_cities_display),
                         use_container_width=True
                     )
                     

@@ -173,54 +173,7 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
     
     return fig, animate, actual_frames
 
-# Função para validar e corrigir dados de PM
-def validate_and_convert_pm_data(pm25, pm10):
-    """
-    Valida e converte dados de PM para as unidades corretas (μg/m³)
-    
-    Args:
-        pm25, pm10: Valores de concentração em unidades desconhecidas
-    
-    Returns:
-        tuple: (pm25_corrected, pm10_corrected, conversion_applied) em μg/m³
-    """
-    
-    # Converter para float
-    pm25 = float(pm25)
-    pm10 = float(pm10)
-    
-    # Detectar unidades baseado na magnitude
-    if pm25 < 1e-9 or pm10 < 1e-9:
-        # Muito pequeno - provavelmente em kg/m³
-        pm25 *= 1e9  # kg/m³ para μg/m³
-        pm10 *= 1e9
-        conversion_applied = "kg/m³ -> μg/m³"
-    elif pm25 < 1e-6 or pm10 < 1e-6:
-        # Pequeno - provavelmente em g/m³  
-        pm25 *= 1e6  # g/m³ para μg/m³
-        pm10 *= 1e6
-        conversion_applied = "g/m³ -> μg/m³"
-    elif pm25 < 1e-3 or pm10 < 1e-3:
-        # Médio pequeno - provavelmente em mg/m³
-        pm25 *= 1e3  # mg/m³ para μg/m³
-        pm10 *= 1e3
-        conversion_applied = "mg/m³ -> μg/m³"
-    elif pm25 > 10000 or pm10 > 10000:
-        # Muito grande - provavelmente em ng/m³
-        pm25 /= 1000  # ng/m³ para μg/m³
-        pm10 /= 1000
-        conversion_applied = "ng/m³ -> μg/m³"
-    else:
-        # Assumir que já está em μg/m³
-        conversion_applied = "Assumido μg/m³"
-    
-    # Validar PM2.5 <= PM10 (fisicamente correto)
-    if pm25 > pm10:
-        print(f"Aviso: PM2.5 ({pm25:.1f}) > PM10 ({pm10:.1f}) - fisicamente improvável")
-    
-    return round(pm25, 1), round(pm10, 1), conversion_applied
-
-# Função para extrair série temporal de PM2.5 e PM10 (melhorada)
+# Função para extrair série temporal de PM2.5 e PM10
 def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     """Extrai série temporal de PM2.5 e PM10 de um ponto específico do dataset."""
     lat_idx = np.abs(ds.latitude.values - lat).argmin()
@@ -229,7 +182,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     times = []
     pm25_values = []
     pm10_values = []
-    conversions_log = []
     
     # Identificar dimensões temporais
     time_dims = [dim for dim in ds.dims if 'time' in dim or 'forecast' in dim]
@@ -238,63 +190,71 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
         for t_idx, ref_time in enumerate(ds.forecast_reference_time.values):
             for p_idx, period in enumerate(ds.forecast_period.values):
                 try:
-                    pm25_raw = float(ds[pm25_var].isel(
+                    pm25_val = float(ds[pm25_var].isel(
                         forecast_reference_time=t_idx, 
                         forecast_period=p_idx,
                         latitude=lat_idx, 
                         longitude=lon_idx
                     ).values)
                     
-                    pm10_raw = float(ds[pm10_var].isel(
+                    pm10_val = float(ds[pm10_var].isel(
                         forecast_reference_time=t_idx, 
                         forecast_period=p_idx,
                         latitude=lat_idx, 
                         longitude=lon_idx
                     ).values)
                     
-                    # Validar e converter unidades
-                    pm25_val, pm10_val, conversion = validate_and_convert_pm_data(pm25_raw, pm10_raw)
+                    # Converter unidades se necessário
+                    if pm25_val < 1e-6:  # Se muito pequeno, provavelmente em kg/m³
+                        pm25_val *= 1e9  # kg/m³ para μg/m³
+                        pm10_val *= 1e9
+                    elif pm25_val < 1e-3:  # Se pequeno, provavelmente em g/m³
+                        pm25_val *= 1e6  # g/m³ para μg/m³
+                        pm10_val *= 1e6
+                    elif pm25_val > 1000:  # Se muito grande, dividir
+                        pm25_val /= 1000
+                        pm10_val /= 1000
                     
                     actual_time = pd.to_datetime(ref_time) + pd.to_timedelta(period, unit='h')
                     times.append(actual_time)
                     pm25_values.append(pm25_val)
                     pm10_values.append(pm10_val)
-                    conversions_log.append(conversion)
-                except Exception as e:
-                    print(f"Erro ao processar ponto temporal {t_idx},{p_idx}: {e}")
+                except:
                     continue
     elif any(dim in ds.dims for dim in ['time', 'forecast_reference_time']):
         time_dim = next(dim for dim in ds.dims if dim in ['time', 'forecast_reference_time'])
         for t_idx in range(len(ds[time_dim])):
             try:
-                pm25_raw = float(ds[pm25_var].isel({
+                pm25_val = float(ds[pm25_var].isel({
                     time_dim: t_idx,
                     'latitude': lat_idx,
                     'longitude': lon_idx
                 }).values)
                 
-                pm10_raw = float(ds[pm10_var].isel({
+                pm10_val = float(ds[pm10_var].isel({
                     time_dim: t_idx,
                     'latitude': lat_idx,
                     'longitude': lon_idx
                 }).values)
                 
-                # Validar e converter unidades
-                pm25_val, pm10_val, conversion = validate_and_convert_pm_data(pm25_raw, pm10_raw)
+                # Converter unidades se necessário
+                if pm25_val < 1e-6:
+                    pm25_val *= 1e9
+                    pm10_val *= 1e9
+                elif pm25_val < 1e-3:
+                    pm25_val *= 1e6
+                    pm10_val *= 1e6
+                elif pm25_val > 1000:
+                    pm25_val /= 1000
+                    pm10_val /= 1000
                 
                 times.append(pd.to_datetime(ds[time_dim].isel({time_dim: t_idx}).values))
                 pm25_values.append(pm25_val)
                 pm10_values.append(pm10_val)
-                conversions_log.append(conversion)
-            except Exception as e:
-                print(f"Erro ao processar ponto temporal {t_idx}: {e}")
+            except:
                 continue
     
     if times and pm25_values and pm10_values:
-        # Log das conversões aplicadas
-        unique_conversions = list(set(conversions_log))
-        print(f"Conversões aplicadas: {unique_conversions}")
-        
         df = pd.DataFrame({
             'time': times,
             'pm25': pm25_values,
@@ -302,109 +262,75 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
         })
         df = df.sort_values('time').reset_index(drop=True)
         
-        # Calcular IQA com função corrigida
-        aqi_results = []
-        for _, row in df.iterrows():
-            aqi, category, color = calculate_aqi(row['pm25'], row['pm10'])
-            aqi_results.append((aqi, category, color))
-        
-        df['aqi'] = [result[0] for result in aqi_results]
-        df['aqi_category'] = [result[1] for result in aqi_results]
-        df['aqi_color'] = [result[2] for result in aqi_results]
-        
-        # Estatísticas de validação
-        print(f"Dados extraídos: {len(df)} pontos temporais")
-        print(f"PM2.5 range: {df['pm25'].min():.1f} - {df['pm25'].max():.1f} μg/m³")
-        print(f"PM10 range: {df['pm10'].min():.1f} - {df['pm10'].max():.1f} μg/m³")
-        print(f"IQA range: {df['aqi'].min():.0f} - {df['aqi'].max():.0f}")
+        # Calcular IQA
+        aqi_values = df.apply(lambda row: calculate_aqi(row['pm25'], row['pm10']), axis=1)
+        df['aqi'] = aqi_values.apply(lambda x: x[0])
+        df['aqi_category'] = aqi_values.apply(lambda x: x[1])
+        df['aqi_color'] = aqi_values.apply(lambda x: x[2])
         
         return df
     else:
-        print("Erro: Não foi possível extrair dados válidos")
-        return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color'])
+        return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category'])
 
-# Função corrigida para calcular IQA (Índice de Qualidade do Ar)
+# Função para calcular IQA (Índice de Qualidade do Ar)
 def calculate_aqi(pm25, pm10):
     """
     Calcula o Índice de Qualidade do Ar baseado em PM2.5 e PM10.
-    Usa os padrões da EPA dos EUA, adaptados para uso no Brasil.
-    
-    Args:
-        pm25 (float): Concentração de PM2.5 em μg/m³
-        pm10 (float): Concentração de PM10 em μg/m³
-    
-    Returns:
-        tuple: (aqi_value, category, color)
+    Usa os padrões da EPA adaptados para o Brasil.
     """
-    
-    # Validar inputs
-    if pm25 < 0 or pm10 < 0:
-        return 0, "Dados Inválidos", "#gray"
-    
-    # Breakpoints para PM2.5 (μg/m³) - EPA padrão
+    # Breakpoints para PM2.5 (μg/m³)
     pm25_breakpoints = [
-        (0.0, 12.0, 0, 50),      # Boa
-        (12.1, 35.4, 51, 100),   # Moderada  
-        (35.5, 55.4, 101, 150),  # Insalubre para Grupos Sensíveis
+        (0, 12, 0, 50),      # Boa
+        (12.1, 35.4, 51, 100),  # Moderada
+        (35.5, 55.4, 101, 150), # Insalubre para grupos sensíveis
         (55.5, 150.4, 151, 200), # Insalubre
         (150.5, 250.4, 201, 300), # Muito Insalubre
-        (250.5, 500.4, 301, 500)  # Perigosa
+        (250.5, 500, 301, 500)  # Perigosa
     ]
     
-    # Breakpoints para PM10 (μg/m³) - EPA padrão
+    # Breakpoints para PM10 (μg/m³)
     pm10_breakpoints = [
-        (0, 54, 0, 50),          # Boa
-        (55, 154, 51, 100),      # Moderada
-        (155, 254, 101, 150),    # Insalubre para Grupos Sensíveis
-        (255, 354, 151, 200),    # Insalubre
-        (355, 424, 201, 300),    # Muito Insalubre
-        (425, 604, 301, 500)     # Perigosa
+        (0, 54, 0, 50),
+        (55, 154, 51, 100),
+        (155, 254, 101, 150),
+        (255, 354, 151, 200),
+        (355, 424, 201, 300),
+        (425, 600, 301, 500)
     ]
     
     def calc_sub_index(concentration, breakpoints):
-        """
-        Calcula o sub-índice para um poluente específico
-        """
-        # Arredondar concentração para 1 casa decimal
-        concentration = round(concentration, 1)
-        
         for bp_lo, bp_hi, i_lo, i_hi in breakpoints:
             if bp_lo <= concentration <= bp_hi:
-                # Fórmula EPA: I = ((I_hi - I_lo)/(BP_hi - BP_lo)) * (C - BP_lo) + I_lo
-                sub_index = ((i_hi - i_lo) / (bp_hi - bp_lo)) * (concentration - bp_lo) + i_lo
-                return round(sub_index, 0)
-        
-        # Se exceder todos os breakpoints, retorna 500 (máximo)
-        return 500
+                return ((i_hi - i_lo) / (bp_hi - bp_lo)) * (concentration - bp_lo) + i_lo
+        return 500  # Máximo se exceder todos os breakpoints
     
-    # Calcular sub-índices
     aqi_pm25 = calc_sub_index(pm25, pm25_breakpoints)
     aqi_pm10 = calc_sub_index(pm10, pm10_breakpoints)
     
-    # O IQA final é o MAIOR dos dois sub-índices
-    final_aqi = max(aqi_pm25, aqi_pm10)
+    # IQA é o maior dos dois
+    aqi = max(aqi_pm25, aqi_pm10)
     
-    # Determinar categoria e cor
-    if final_aqi <= 50:
+    # Categoria
+    if aqi <= 50:
         category = "Boa"
-        color = "#00e400"  # Verde
-    elif final_aqi <= 100:
+        color = "green"
+    elif aqi <= 100:
         category = "Moderada"
-        color = "#ffff00"  # Amarelo
-    elif final_aqi <= 150:
+        color = "yellow"
+    elif aqi <= 150:
         category = "Insalubre para Grupos Sensíveis"
-        color = "#ff7e00"  # Laranja
-    elif final_aqi <= 200:
+        color = "orange"
+    elif aqi <= 200:
         category = "Insalubre"
-        color = "#ff0000"  # Vermelho
-    elif final_aqi <= 300:
+        color = "red"
+    elif aqi <= 300:
         category = "Muito Insalubre"
-        color = "#8f3f97"  # Roxo
+        color = "purple"
     else:
         category = "Perigosa"
-        color = "#7e0023"  # Vinho
+        color = "maroon"
     
-    return int(final_aqi), category, color
+    return aqi, category, color
 
 # Função para prever valores futuros
 def predict_future_values(df, days=5):
@@ -466,103 +392,19 @@ def predict_future_values(df, days=5):
     result = pd.concat([df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']], df_pred], ignore_index=True)
     return result
 
-# Função para analisar todas as cidades (melhorada)
+# Função para analisar todas as cidades
 def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
-    """Analisa os valores de PM2.5 e PM10 para todas as cidades com validação melhorada."""
+    """Analisa os valores de PM2.5 e PM10 para todas as cidades."""
     cities_results = []
     
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
-    # Aplicar conversão de unidades no dataset completo primeiro
-    print("Aplicando conversões de unidade no dataset...")
-    
-    # Detectar e converter unidades do dataset
-    pm25_sample = float(ds[pm25_var].isel(latitude=0, longitude=0, **{list(ds[pm25_var].dims)[0]: 0}).values)
-    pm10_sample = float(ds[pm10_var].isel(latitude=0, longitude=0, **{list(ds[pm10_var].dims)[0]: 0}).values)
-    
-    _, _, conversion_needed = validate_and_convert_pm_data(pm25_sample, pm10_sample)
-    print(f"Conversão detectada para dataset: {conversion_needed}")
-    
-    # Aplicar conversão se necessário
-    if "kg/m³" in conversion_needed:
-        ds[pm25_var] = ds[pm25_var] * 1e9
-        ds[pm10_var] = ds[pm10_var] * 1e9
-        print("Aplicada conversão kg/m³ -> μg/m³")
-    elif "g/m³" in conversion_needed:
-        ds[pm25_var] = ds[pm25_var] * 1e6
-        ds[pm10_var] = ds[pm10_var] * 1e6
-        print("Aplicada conversão g/m³ -> μg/m³")
-    elif "mg/m³" in conversion_needed:
-        ds[pm25_var] = ds[pm25_var] * 1e3
-        ds[pm10_var] = ds[pm10_var] * 1e3
-        print("Aplicada conversão mg/m³ -> μg/m³")
-    elif "ng/m³" in conversion_needed:
-        ds[pm25_var] = ds[pm25_var] / 1000
-        ds[pm10_var] = ds[pm10_var] / 1000
-        print("Aplicada conversão ng/m³ -> μg/m³")
     
     for i, (city_name, coords) in enumerate(cities_dict.items()):
         progress = (i + 1) / len(cities_dict)
         progress_bar.progress(progress)
         status_text.text(f"Analisando {city_name}... ({i+1}/{len(cities_dict)})")
         
-        lat, lon = coords
-        
-        try:
-            df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)
-            
-            if not df_timeseries.empty:
-                df_forecast = predict_future_values(df_timeseries, days=5)
-                
-                forecast_only = df_forecast[df_forecast['type'] == 'forecast']
-                
-                if not forecast_only.empty:
-                    max_pm25 = forecast_only['pm25'].max()
-                    max_pm10 = forecast_only['pm10'].max()
-                    max_aqi = forecast_only['aqi'].max()
-                    
-                    max_day_idx = forecast_only['aqi'].idxmax()
-                    max_day = forecast_only.loc[max_day_idx, 'time']
-                    max_category = forecast_only.loc[max_day_idx, 'aqi_category']
-                    
-                    cities_results.append({
-                        'cidade': city_name,
-                        'pm25_max': max_pm25,
-                        'pm10_max': max_pm10,
-                        'aqi_max': max_aqi,
-                        'data_max': max_day,
-                        'categoria': max_category
-                    })
-                    
-                    # Log para debug das primeiras cidades
-                    if i < 3:
-                        print(f"{city_name}: PM2.5={max_pm25:.1f}, PM10={max_pm10:.1f}, IQA={max_aqi:.0f}")
-        except Exception as e:
-            print(f"Erro ao analisar {city_name}: {e}")
-            continue
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if cities_results:
-        df_results = pd.DataFrame(cities_results)
-        df_results = df_results.sort_values('aqi_max', ascending=False).reset_index(drop=True)
-        
-        df_results['pm25_max'] = df_results['pm25_max'].round(1)
-        df_results['pm10_max'] = df_results['pm10_max'].round(1)
-        df_results['aqi_max'] = df_results['aqi_max'].round(0)
-        df_results['data_max'] = df_results['data_max'].dt.strftime('%d/%m/%Y %H:%M')
-        
-        # Log estatísticas gerais
-        print(f"Análise completa: {len(df_results)} cidades")
-        print(f"IQA range: {df_results['aqi_max'].min():.0f} - {df_results['aqi_max'].max():.0f}")
-        print(f"Cidades com IQA > 100: {len(df_results[df_results['aqi_max'] > 100])}")
-        
-        return df_results
-    else:
-        print("Nenhuma cidade analisada com sucesso")
-        return pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
         lat, lon = coords
         
         df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)

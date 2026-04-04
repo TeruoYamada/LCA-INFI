@@ -680,8 +680,6 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     # Gráfico PM2.5
                     if not hist_data.empty:
                         ax1.plot(hist_data['time'], hist_data['pm25'], 'o-', color='darkblue', label='PM2.5 Observado', markersize=6)
-                    if not forecast_data.empty:
-                        ax1.plot(forecast_data['time'], forecast_data['pm25'], 'x--', color='red', label='PM2.5 Previsto', markersize=6)
                     ax1.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (25 μg/m³)')
                     ax1.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
                     ax1.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
@@ -691,8 +689,6 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     # Gráfico PM10
                     if not hist_data.empty:
                         ax2.plot(hist_data['time'], hist_data['pm10'], 'o-', color='brown', label='PM10 Observado', markersize=6)
-                    if not forecast_data.empty:
-                        ax2.plot(forecast_data['time'], forecast_data['pm10'], 'x--', color='darkred', label='PM10 Previsto', markersize=6)
                     ax2.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
                     ax2.axhline(y=150, color='red', linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
                     ax2.set_ylabel('PM10 (μg/m³)', fontsize=12)
@@ -702,8 +698,6 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     # Gráfico IQA
                     if not hist_data.empty:
                         ax3.plot(hist_data['time'], hist_data['aqi'], 'o-', color='purple', label='IQA Observado', markersize=6)
-                    if not forecast_data.empty:
-                        ax3.plot(forecast_data['time'], forecast_data['aqi'], 'x--', color='magenta', label='IQA Previsto', markersize=6)
                     ax3.axhspan(0, 50, alpha=0.2, color='green', label='Boa')
                     ax3.axhspan(51, 100, alpha=0.2, color='yellow', label='Moderada')
                     ax3.axhspan(101, 150, alpha=0.2, color='orange', label='Insalubre p/ Sensíveis')
@@ -718,7 +712,7 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                     st.pyplot(fig)
                 
                 with col2:
-                    st.subheader("📈 Estatísticas Atuais")
+                    st.subheader("Estatísticas Atuais")
                     
                     if not hist_data.empty:
                         curr_pm25 = hist_data['pm25'].iloc[-1]
@@ -740,26 +734,26 @@ if st.button("🎯 Gerar Análise de Qualidade do Ar", type="primary", use_conta
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        st.subheader("💡 Recomendações")
+                        st.subheader("Recomendações")
                         if curr_aqi <= 50:
-                            st.success("✅ Condições ideais para atividades ao ar livre")
+                            st.success("Condições ideais para atividades ao ar livre")
                         elif curr_aqi <= 100:
-                            st.info("ℹ️ Pessoas sensíveis devem considerar limitar esforços prolongados")
+                            st.info("Pessoas sensíveis devem considerar limitar esforços prolongados")
                         elif curr_aqi <= 150:
-                            st.warning("⚠️ Grupos sensíveis devem evitar esforços ao ar livre")
+                            st.warning("Grupos sensíveis devem evitar esforços ao ar livre")
                         elif curr_aqi <= 200:
-                            st.error("🚫 Evite esforços prolongados ao ar livre")
+                            st.error("Evite esforços prolongados ao ar livre")
                         else:
-                            st.error("☠️ Evite todas as atividades ao ar livre")
+                            st.error("Evite todas as atividades ao ar livre")
                         
-                        st.subheader("📏 Comparação com Padrões")
+                        st.subheader("Comparação com Padrões")
                         st.progress(min(curr_pm25 / 25, 1.0))
                         st.caption(f"PM2.5: {curr_pm25:.1f}/25 μg/m³ (Limite OMS 24h)")
                         st.progress(min(curr_pm10 / 50, 1.0))
                         st.caption(f"PM10: {curr_pm10:.1f}/50 μg/m³ (Limite OMS 24h)")
                     
                     # Exportar dados
-                    st.subheader("💾 Exportar Dados")
+                    st.subheader("Exportar Dados")
                     csv = df_combined.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="⬇️ Baixar Dados Completos (CSV)",

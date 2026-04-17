@@ -263,7 +263,15 @@ def predict_future_values(df, days=5):
     model_pm10.fit(X, df_hist['pm10'].values)
     
     last_time = df_hist['time'].max()
-    future_times = [last_time + timedelta(hours=i*6) for i in range(1, days*4+1)]
+
+    # ── CORREÇÃO: define o horizonte máximo como exatamente 5 dias a partir
+    # do último ponto histórico, garantindo que a tabela de ranking não exiba
+    # datas além desse limite independentemente do intervalo requisitado ao CAMS.
+    forecast_horizon = timedelta(days=days)
+    future_times = [last_time + timedelta(hours=i * 6)
+                    for i in range(1, days * 4 + 1)
+                    if timedelta(hours=i * 6) <= forecast_horizon]
+
     future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
     
     future_pm25 = np.maximum(model_pm25.predict(np.array(future_time_numeric).reshape(-1, 1)), 0)

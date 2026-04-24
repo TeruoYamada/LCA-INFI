@@ -24,20 +24,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 import base64
 
-# ============================================================
-#  CREDENCIAIS — lidas de .streamlit/secrets.toml
-#
-#  Estrutura esperada no secrets.toml:
-#
-#  [ads]
-#  url = "https://ads.atmosphere.copernicus.eu/api/v2"
-#  key = "sua-chave-cams"
-#
-#  [email]
-#  remetente    = "seuemail@gmail.com"
-#  senha_app    = "xxxx xxxx xxxx xxxx"   # Senha de App do Gmail (16 chars)
-#  destinatario = "destinatario@gmail.com"
-# ============================================================
+
 try:
     EMAIL_REMETENTE    = st.secrets["email"]["remetente"]
     EMAIL_SENHA_APP    = st.secrets["email"]["senha_app"]
@@ -1034,7 +1021,7 @@ def generate_pm_analysis():
                 gif_pm10_path=gif_filename_pm10
             )
         if ok:
-            st.success(f"📧 Relatório completo enviado para {EMAIL_DESTINATARIO}")
+            st.success("📧 Relatório completo.")
         elif _email_configurado:
             st.warning("⚠️ Falha ao enviar e-mail. Verifique as credenciais no secrets.toml.")
         else:
@@ -1373,20 +1360,6 @@ with st.expander("Suporte e Informações Técnicas"):
     - Previsão: Até a data final selecionada pelo usuário
     - Variáveis principais: PM2.5 e PM10 diretos
     - Contornos: Municípios de MS com destaque do selecionado
-
-    **Configuração do E-mail (`.streamlit/secrets.toml`):**
-    ```toml
-    [ads]
-    url = "https://ads.atmosphere.copernicus.eu/api/v2"
-    key = "sua-chave-cams"
-
-    [email]
-    remetente    = "seuemail@gmail.com"
-    senha_app    = "xxxx xxxx xxxx xxxx"
-    destinatario = "destinatario@gmail.com"
-    ```
-    > **Senha de App Gmail:** acesse myaccount.google.com/apppasswords  
-    > (requer verificação em 2 etapas ativa na conta)
 
     **O relatório por e-mail inclui:**
     - Métricas atuais e previsão do município selecionado

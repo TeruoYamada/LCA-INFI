@@ -26,12 +26,18 @@ import base64
 
 
 try:
-    EMAIL_REMETENTE    = st.secrets["email"]["remetente"]
-    EMAIL_SENHA_APP    = st.secrets["email"]["senha_app"]
-    EMAIL_DESTINATARIO = st.secrets["email"]["destinatario"]
-    _email_configurado = True
+    EMAIL_REMETENTE     = st.secrets["email"]["remetente"]
+    EMAIL_SENHA_APP     = st.secrets["email"]["senha_app"]
+    # Suporte a múltiplos destinatários: pode ser string única ou lista
+    _dest_raw           = st.secrets["email"]["destinatario"]
+    if isinstance(_dest_raw, str):
+        EMAIL_DESTINATARIOS = [e.strip() for e in _dest_raw.split(",") if e.strip()]
+    else:
+        EMAIL_DESTINATARIOS = list(_dest_raw)
+    _email_configurado  = True
 except KeyError:
-    _email_configurado = False
+    EMAIL_DESTINATARIOS = []
+    _email_configurado  = False
 
 
 def enviar_relatorio_email(
@@ -39,23 +45,13 @@ def enviar_relatorio_email(
     start_date, end_date,
     gif_pm25_path=None, gif_pm10_path=None
 ):
-    """
-    Envia um e-mail relatório completo com:
-    - Resumo do município selecionado (histórico + previsão)
-    - Tabela dos municípios em alerta estadual
-    - Indicadores de qualidade do ar
-    - GIFs de animação como anexo (se disponíveis)
-    Retorna True se bem-sucedido.
-    """
     if not _email_configurado:
         return False
 
     try:
-        # ---- Dados do município selecionado ----
         hist = df_timeseries
         fc   = df_forecast[df_forecast['type'] == 'forecast'] if 'type' in df_forecast.columns else pd.DataFrame()
 
-        # Última leitura histórica
         if not hist.empty:
             ultimo       = hist.iloc[-1]
             curr_pm25    = ultimo['pm25']
@@ -70,7 +66,6 @@ def enviar_relatorio_email(
             curr_color = "gray"
             curr_time  = "N/D"
 
-        # Previsão: pior momento
         if not fc.empty:
             idx_max     = fc['aqi'].idxmax()
             prev_pm25   = fc.loc[idx_max, 'pm25']
@@ -91,7 +86,6 @@ def enviar_relatorio_email(
             aqi_max_periodo = 0
             pm25_med_prev = pm10_med_prev = 0
 
-        # Cor da faixa de alerta para o cabeçalho
         def cor_faixa(aqi_val):
             if aqi_val <= 50:   return "#00c853", "#ffffff"
             if aqi_val <= 100:  return "#ffd600", "#333333"
@@ -102,7 +96,6 @@ def enviar_relatorio_email(
 
         cor_h, txt_h = cor_faixa(aqi_max_periodo if aqi_max_periodo > curr_aqi else curr_aqi)
 
-        # ---- Recomendações ----
         def recomendacao(aqi_val):
             if aqi_val <= 50:
                 return "✅ Condições ideais para atividades ao ar livre."
@@ -117,7 +110,6 @@ def enviar_relatorio_email(
         rec_atual  = recomendacao(curr_aqi)
         rec_prev   = recomendacao(prev_aqi)
 
-        # ---- Tabela série histórica (últimas 10 leituras) ----
         def badge_aqi(aqi_val, cat):
             bg, tc = cor_faixa(aqi_val)
             return f"<span style='background:{bg};color:{tc};padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;'>{aqi_val:.0f} – {cat}</span>"
@@ -137,7 +129,7 @@ def enviar_relatorio_email(
                          f"</tr>")
             return rows
 
-        rows_hist = rows_timeseries(hist, "Histórico", "#1565c0")
+        rows_hist = rows_timeseries(hist, "Previsto", "#1565c0")
         rows_prev = rows_timeseries(fc,   "Previsão",  "#e65100") if not fc.empty else ""
 
         tabela_serie = f"""
@@ -157,10 +149,9 @@ def enviar_relatorio_email(
           <tbody>{rows_hist}{rows_prev}</tbody>
         </table>
         <p style='font-size:11px;color:#999;margin-top:4px;'>
-          * Histórico: últimas 10 leituras · Previsão: próximos pontos até {end_date.strftime('%d/%m/%Y')}
+          * Dados CAMS: previsões até {end_date.strftime('%d/%m/%Y')}
         </p>"""
 
-        # ---- Tabela municípios em alerta estadual ----
         tabela_estadual = ""
         n_alerta = 0
         if top_pollution_df is not None and not top_pollution_df.empty:
@@ -198,7 +189,6 @@ def enviar_relatorio_email(
               <tbody>{rows_est}</tbody>
             </table>"""
 
-        # ---- Métricas resumo ----
         def card(titulo, valor, unidade, cor_borda):
             return (f"<div style='flex:1;min-width:130px;background:#fff;border-radius:10px;"
                     f"border-left:5px solid {cor_borda};padding:14px 16px;box-shadow:0 1px 6px rgba(0,0,0,.08);'>"
@@ -208,15 +198,14 @@ def enviar_relatorio_email(
                     f"</div>")
 
         cards_atual = (
-            card("PM2.5 Atual",     f"{curr_pm25:.1f}", "μg/m³", "#1565c0") +
-            card("PM10 Atual",      f"{curr_pm10:.1f}", "μg/m³", "#6d4c41") +
-            card("IQA Atual",       f"{curr_aqi:.0f}",  "",       cor_h) +
-            card("PM2.5 Prev. Máx", f"{prev_pm25:.1f}", "μg/m³", "#e65100") +
-            card("PM10 Prev. Máx",  f"{prev_pm10:.1f}", "μg/m³", "#bf360c") +
-            card("IQA Prev. Máx",   f"{prev_aqi:.0f}",  "",       cor_h)
+            card("PM2.5 Previsto",      f"{curr_pm25:.1f}", "μg/m³", "#1565c0") +
+            card("PM10 Previsto",       f"{curr_pm10:.1f}", "μg/m³", "#6d4c41") +
+            card("IQA Atual",           f"{curr_aqi:.0f}",  "",       cor_h) +
+            card("PM2.5 Prev. Máx",     f"{prev_pm25:.1f}", "μg/m³", "#e65100") +
+            card("PM10 Prev. Máx",      f"{prev_pm10:.1f}", "μg/m³", "#bf360c") +
+            card("IQA Prev. Máx",       f"{prev_aqi:.0f}",  "",       cor_h)
         )
 
-        # ---- Montar HTML completo ----
         assunto = (f"📋 Relatório Qualidade do Ar — {cidade} | "
                    f"{start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}")
 
@@ -241,7 +230,6 @@ def enviar_relatorio_email(
           <div style='max-width:720px;margin:auto;background:#fff;border-radius:14px;
                       box-shadow:0 4px 18px rgba(0,0,0,.12);overflow:hidden;'>
 
-            <!-- CABEÇALHO -->
             <div style='background:{cor_h};padding:32px 36px;text-align:center;'>
               <h1 style='color:{txt_h};margin:0;font-size:26px;letter-spacing:.5px;'>
                 🌍 Relatório de Qualidade do Ar
@@ -251,16 +239,14 @@ def enviar_relatorio_email(
               </p>
             </div>
 
-            <!-- CORPO -->
             <div style='padding:32px 36px;'>
 
-              <!-- Período e município -->
               <table style='width:100%;margin-bottom:20px;'>
                 <tr>
                   <td style='font-size:14px;color:#555;'>
                     <strong>Município:</strong> {cidade}<br>
                     <strong>Período:</strong> {start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}<br>
-                    <strong>Última leitura:</strong> {curr_time}
+                    <strong>Referência temporal:</strong> {curr_time}
                   </td>
                   <td style='text-align:right;'>
                     <div style='background:{cor_h};color:{txt_h};padding:10px 18px;border-radius:8px;
@@ -274,28 +260,25 @@ def enviar_relatorio_email(
 
               {alerta_header}
 
-              <!-- Cards métricas -->
               <div style='display:flex;flex-wrap:wrap;gap:10px;margin-bottom:24px;'>
                 {cards_atual}
               </div>
 
-              <!-- Recomendação atual -->
               <div style='background:#e8f5e9;border-left:4px solid #43a047;
                           padding:12px 16px;border-radius:6px;margin-bottom:8px;font-size:13px;'>
-                <strong>Condição atual:</strong> {rec_atual}
+                <strong>Condição prevista atual:</strong> {rec_atual}
               </div>
               <div style='background:#fff8e1;border-left:4px solid #ffa000;
                           padding:12px 16px;border-radius:6px;margin-bottom:24px;font-size:13px;'>
                 <strong>Previsão (pior momento — {prev_time_s}):</strong> {rec_prev}
               </div>
 
-              <!-- Comparação com padrões OMS -->
               <h3 style='color:#333;border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-top:0;'>
                 📏 Comparação com Padrões OMS (24h)
               </h3>
               <table style='width:100%;font-size:13px;margin-bottom:24px;'>
                 <tr>
-                  <td style='padding:6px 0;color:#555;'>PM2.5 atual</td>
+                  <td style='padding:6px 0;color:#555;'>PM2.5 previsto</td>
                   <td style='padding:6px 0;'>
                     <div style='background:#e0e0e0;border-radius:6px;height:14px;width:100%;position:relative;'>
                       <div style='background:#1565c0;border-radius:6px;height:14px;
@@ -307,7 +290,7 @@ def enviar_relatorio_email(
                   </td>
                 </tr>
                 <tr>
-                  <td style='padding:6px 0;color:#555;'>PM10 atual</td>
+                  <td style='padding:6px 0;color:#555;'>PM10 previsto</td>
                   <td style='padding:6px 0;'>
                     <div style='background:#e0e0e0;border-radius:6px;height:14px;width:100%;'>
                       <div style='background:#6d4c41;border-radius:6px;height:14px;
@@ -344,7 +327,6 @@ def enviar_relatorio_email(
                 </tr>
               </table>
 
-              <!-- Legenda IQA -->
               <h3 style='color:#333;border-bottom:2px solid #e0e0e0;padding-bottom:6px;'>
                 🎨 Escala do Índice de Qualidade do Ar (IQA)
               </h3>
@@ -378,7 +360,6 @@ def enviar_relatorio_email(
               {tabela_serie}
               {tabela_estadual}
 
-              <!-- Estatísticas do período de previsão -->
               {"" if fc.empty else f"""
               <h3 style='color:#333;margin-top:28px;border-bottom:2px solid #e0e0e0;padding-bottom:6px;'>
                 📈 Estatísticas do Período de Previsão
@@ -412,7 +393,6 @@ def enviar_relatorio_email(
 
               {gif_aviso}
 
-              <!-- Resumo alerta estadual -->
               {"" if n_alerta == 0 else f"""
               <div style='background:#ffebee;border-left:5px solid #c62828;padding:14px 18px;
                           border-radius:6px;margin-top:20px;font-size:13px;'>
@@ -420,7 +400,6 @@ def enviar_relatorio_email(
                 até {end_date.strftime('%d/%m/%Y')} em Mato Grosso do Sul.
               </div>"""}
 
-              <!-- Rodapé -->
               <p style='color:#bbb;font-size:11px;margin-top:32px;border-top:1px solid #eee;
                         padding-top:14px;text-align:center;'>
                 Relatório gerado automaticamente pelo <strong>Monitor PM2.5/PM10 — MS</strong>.<br>
@@ -433,18 +412,15 @@ def enviar_relatorio_email(
         </body>
         </html>"""
 
-        # ---- Montar mensagem ----
         msg            = MIMEMultipart("mixed")
         msg["Subject"] = assunto
         msg["From"]    = EMAIL_REMETENTE
-        msg["To"]      = EMAIL_DESTINATARIO
+        msg["To"]      = ", ".join(EMAIL_DESTINATARIOS)
 
-        # Parte HTML
         alt_part = MIMEMultipart("alternative")
         alt_part.attach(MIMEText(html, "html"))
         msg.attach(alt_part)
 
-        # Anexar GIFs se disponíveis
         for gif_path, label in [(gif_pm25_path, "PM25"), (gif_pm10_path, "PM10")]:
             if gif_path and os.path.exists(gif_path):
                 with open(gif_path, "rb") as f:
@@ -455,10 +431,9 @@ def enviar_relatorio_email(
                                     filename=f"Animacao_{label}_{cidade}_{start_date.strftime('%Y%m%d')}.gif")
                     msg.attach(part)
 
-        # Envio
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
             srv.login(EMAIL_REMETENTE, EMAIL_SENHA_APP)
-            srv.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIO, msg.as_string())
+            srv.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIOS, msg.as_string())
         return True
 
     except Exception as e:
@@ -495,15 +470,25 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         st.error("Erro: Dados insuficientes para animação.")
         return None
 
-    vmin, vmax = float(da_pm.min().values), float(da_pm.max().values)
+    vmin_raw = float(da_pm.min().values)
+    vmax_raw = float(da_pm.max().values)
+
+    # Limiar: valores abaixo de 1 μg/m³ aparecem em branco
+    THRESHOLD = 1.0
+
     if pm_type == "PM2.5":
-        vmin = max(0, vmin - 5)
-        vmax = min(200, vmax + 10)
-        colormap = 'YlOrRd'
+        vmin = THRESHOLD
+        vmax = min(200, vmax_raw + 10)
+        colormap_name = 'YlOrRd'
     else:
-        vmin = max(0, vmin - 5)
-        vmax = min(300, vmax + 15)
-        colormap = 'Oranges'
+        vmin = THRESHOLD
+        vmax = min(300, vmax_raw + 15)
+        colormap_name = 'Oranges'
+
+    # Colormap com branco para valores abaixo do limiar
+    import copy
+    cmap_obj = plt.cm.get_cmap(colormap_name).copy()
+    cmap_obj.set_under('white')
 
     ms_extent = [-58.5, -50.5, -24.5, -17.0]
 
@@ -545,24 +530,28 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         first_frame_data = da_pm.isel({time_dim: 0}).values
         first_frame_time = pd.to_datetime(da_pm[time_dim].values[0])
 
-    im = ax.pcolormesh(ds.longitude, ds.latitude, first_frame_data,
-                       cmap=colormap, vmin=vmin, vmax=vmax,
+    # Mascarar valores abaixo do limiar
+    masked_first = np.ma.masked_less(first_frame_data, THRESHOLD)
+
+    im = ax.pcolormesh(ds.longitude, ds.latitude, masked_first,
+                       cmap=cmap_obj, vmin=vmin, vmax=vmax,
                        transform=ccrs.PlateCarree(), alpha=0.8)
 
-    cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal')
+    cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal',
+                        extend='min')  # extend='min' indica que < vmin é branco
     cbar.set_label(f'{pm_type} (μg/m³)', fontsize=12, weight='bold')
     cbar.ax.tick_params(labelsize=10)
 
-    title = ax.set_title(f'{pm_type} - {city}\n{first_frame_time.strftime("%d/%m/%Y %H:%M UTC")}',
+    title = ax.set_title(f'{pm_type} (previsto CAMS) - {city}\n{first_frame_time.strftime("%d/%m/%Y %H:%M UTC")}',
                          fontsize=16, pad=20, weight='bold')
 
     if pm_type == "PM2.5":
-        ax.text(0.02, 0.02, 'Limites: OMS=25 μg/m³, EPA=35 μg/m³',
+        ax.text(0.02, 0.02, 'Limites: OMS=25 μg/m³, EPA=35 μg/m³  |  Branco: < 1 μg/m³',
                 transform=ax.transAxes, fontsize=10, weight='bold',
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='orange'),
                 verticalalignment='bottom')
     else:
-        ax.text(0.02, 0.02, 'Limites: OMS=50 μg/m³, EPA=150 μg/m³',
+        ax.text(0.02, 0.02, 'Limites: OMS=50 μg/m³, EPA=150 μg/m³  |  Branco: < 1 μg/m³',
                 transform=ax.transAxes, fontsize=10, weight='bold',
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='orange'),
                 verticalalignment='bottom')
@@ -582,8 +571,10 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
                 frame_data = da_pm.isel({time_dim: t_idx}).values
                 frame_time = pd.to_datetime(da_pm[time_dim].values[t_idx])
 
-            im.set_array(frame_data.ravel())
-            title.set_text(f'{pm_type} - {city}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
+            # Mascarar abaixo do limiar em cada frame
+            masked_frame = np.ma.masked_less(frame_data, THRESHOLD)
+            im.set_array(masked_frame.ravel())
+            title.set_text(f'{pm_type} (previsto CAMS) - {city}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
 
             return [im, title]
         except Exception as e:
@@ -902,16 +893,15 @@ st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
 st.markdown("""
 ### Sistema Integrado de Monitoramento da Qualidade do Ar
 
-Este aplicativo monitora diretamente as concentrações de Material Particulado (PM2.5 e PM10) 
-para todos os municípios de Mato Grosso do Sul usando dados diretos do CAMS.
+Este aplicativo apresenta as previsões de concentrações de Material Particulado (PM2.5 e PM10) 
+para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 
 **Características desta versão:**
-- Dados diretos de PM2.5 e PM10 do CAMS (sem conversão de AOD)
+- Previsões de PM2.5 e PM10 do modelo CAMS (Copernicus)
 - Visualização centralizada no município selecionado com contornos municipais
 - Animações temporais para PM2.5 e PM10
 - Índice de Qualidade do Ar (IQA) calculado
 - Previsões limitadas à data final selecionada
-- Relatório completo por e-mail com tabelas e animações em anexo
 """)
 
 
@@ -949,7 +939,7 @@ def generate_pm_analysis():
     filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.nc'
 
     try:
-        with st.spinner('Baixando dados de PM2.5 e PM10 do CAMS...'):
+        with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS...'):
             client.retrieve(dataset, request).download(filename)
 
         ds = xr.open_dataset(filename)
@@ -962,14 +952,14 @@ def generate_pm_analysis():
             st.write("Variáveis disponíveis:", variable_names)
             return None
 
-        with st.spinner("Extraindo dados de PM para o município..."):
+        with st.spinner("Extraindo previsões de PM para o município..."):
             df_timeseries = extract_pm_timeseries(ds, lat_center, lon_center, pm25_var, pm10_var)
 
         if df_timeseries.empty:
             st.error("Não foi possível extrair série temporal para este local.")
             return None
 
-        with st.spinner("Gerando previsões..."):
+        with st.spinner("Gerando previsões estendidas..."):
             df_forecast = predict_future_values(df_timeseries, days=5, max_date=end_date)
 
         with st.spinner('Criando animação de PM2.5...'):
@@ -1008,9 +998,9 @@ def generate_pm_analysis():
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
             top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
 
-        # --- ENVIO DO RELATÓRIO POR E-MAIL ---
-        with st.spinner("Enviando relatório por e-mail..."):
-            ok = enviar_relatorio_email(
+        # Envio silencioso do relatório por e-mail (sem exibir status ao usuário)
+        try:
+            enviar_relatorio_email(
                 cidade=city,
                 df_timeseries=df_timeseries,
                 df_forecast=df_forecast,
@@ -1020,13 +1010,8 @@ def generate_pm_analysis():
                 gif_pm25_path=gif_filename_pm25,
                 gif_pm10_path=gif_filename_pm10
             )
-        if ok:
-            st.success("📧 Relatório completo.")
-        elif _email_configurado:
-            st.warning("⚠️ Falha ao enviar e-mail. Verifique as credenciais no secrets.toml.")
-        else:
-            st.info("ℹ️ E-mail não configurado. Adicione a seção [email] no secrets.toml para receber relatórios.")
-        # -------------------------------------
+        except Exception:
+            pass
 
         return {
             'animation_pm25': gif_filename_pm25,
@@ -1061,7 +1046,6 @@ available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(se
 if not available_cities:
     available_cities = list(cities.keys())
 
-# Campo Grande pré-selecionado como padrão
 default_city_index = available_cities.index("Campo Grande") if "Campo Grande" in available_cities else 0
 city = st.sidebar.selectbox("Selecione o município para análise detalhada", available_cities, index=default_city_index)
 lat_center, lon_center = cities[city]
@@ -1079,12 +1063,7 @@ with st.sidebar.expander("Configurações da Visualização"):
     animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
     show_pm10_animation = st.checkbox("Gerar animação também para PM10", value=True)
 
-if _email_configurado:
-    st.sidebar.success(f"📧 Relatório por e-mail ativo\n→ {EMAIL_DESTINATARIO}")
-else:
-    st.sidebar.error("📧 E-mail não configurado\nAdicione [email] no secrets.toml")
-
-st.sidebar.info("Dados Diretos CAMS\nEste sistema utiliza concentrações de PM2.5 e PM10 medidas diretamente pelos sensores do CAMS, com contornos municipais destacados.")
+st.sidebar.info("Previsões CAMS\nEste sistema utiliza previsões de PM2.5 e PM10 do modelo CAMS, com contornos municipais destacados.")
 
 st.markdown("### Iniciar Análise Completa")
 st.markdown(f"Clique no botão abaixo para gerar análise de PM2.5 e PM10 centralizada em **{city}** com contornos municipais.")
@@ -1103,10 +1082,10 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
             with tab3:
                 st.subheader(f"Animações Temporais - {city}")
 
-                st.markdown("### Evolução Temporal - PM2.5")
+                st.markdown("### Evolução Temporal - PM2.5 (Previsto CAMS)")
                 if os.path.exists(results['animation_pm25']):
                     st.image(results['animation_pm25'],
-                             caption=f"Evolução temporal do PM2.5 em {city} com contornos municipais destacados ({start_date} a {end_date})")
+                             caption=f"Previsão temporal do PM2.5 em {city} com contornos municipais destacados ({start_date} a {end_date})")
                     with open(results['animation_pm25'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM2.5 (GIF)",
@@ -1116,9 +1095,9 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                         )
 
                 if results['animation_pm10'] and os.path.exists(results['animation_pm10']):
-                    st.markdown("### Evolução Temporal - PM10")
+                    st.markdown("### Evolução Temporal - PM10 (Previsto CAMS)")
                     st.image(results['animation_pm10'],
-                             caption=f"Evolução temporal do PM10 em {city} com contornos municipais destacados ({start_date} a {end_date})")
+                             caption=f"Previsão temporal do PM10 em {city} com contornos municipais destacados ({start_date} a {end_date})")
                     with open(results['animation_pm10'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM10 (GIF)",
@@ -1134,19 +1113,22 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                 - Ponto vermelho: Localização exata de {city}
                 - Contorno vermelho espesso: Limites do município de {city}
                 - Linhas pretas finas: Contornos de todos os municípios de MS
-                - Cores: Intensidade das concentrações de material particulado
+                - Branco: concentração abaixo de 1 μg/m³ (limiar mínimo)
+                - Cores: Intensidade das previsões de material particulado (CAMS)
 
-                **Escala de Cores PM2.5 (Vermelho-Amarelo):**
-                - Verde/Azul: < 12 μg/m³ (Boa qualidade)
-                - Amarelo: 12-25 μg/m³ (Moderada)
-                - Laranja: 25-35 μg/m³ (Limite OMS excedido)
+                **Escala de Cores PM2.5 (Amarelo-Laranja-Vermelho):**
+                - Branco: < 1 μg/m³ (abaixo do limiar)
+                - Amarelo claro: 1–12 μg/m³ (Boa qualidade)
+                - Amarelo/Laranja: 12–25 μg/m³ (Moderada)
+                - Laranja: 25–35 μg/m³ (Limite OMS excedido)
                 - Vermelho: > 35 μg/m³ (Insalubre)
 
                 **Escala de Cores PM10 (Tons de Laranja):**
-                - Verde claro: < 25 μg/m³ (Boa qualidade)
-                - Amarelo claro: 25-50 μg/m³ (Moderada)
-                - Laranja: 50-150 μg/m³ (Limite OMS excedido)
-                - Vermelho escuro: > 150 μg/m³ (Insalubre)
+                - Branco: < 1 μg/m³ (abaixo do limiar)
+                - Laranja claro: 1–25 μg/m³ (Boa qualidade)
+                - Laranja médio: 25–50 μg/m³ (Moderada)
+                - Laranja escuro: 50–150 μg/m³ (Limite OMS excedido)
+                - Marrom: > 150 μg/m³ (Insalubre)
                 """)
 
             with tab1:
@@ -1160,32 +1142,31 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
 
                     hist_data = df_combined[df_combined['type'] == 'historical']
-                    forecast_data = df_combined[df_combined['type'] == 'forecast']
 
+                    # PM2.5 — apenas dados previstos pelo CAMS (sem linha de "previsto futuro")
                     if not hist_data.empty:
-                        ax1.plot(hist_data['time'], hist_data['pm25'], 'o-', color='darkblue', label='PM2.5 Observado', markersize=6)
-                    if not forecast_data.empty:
-                        ax1.plot(forecast_data['time'], forecast_data['pm25'], 's--', color='steelblue', label='PM2.5 Previsto', markersize=5, alpha=0.8)
+                        ax1.plot(hist_data['time'], hist_data['pm25'], 'o-', color='darkblue',
+                                 label='PM2.5 Previsto (CAMS)', markersize=6)
                     ax1.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (25 μg/m³)')
                     ax1.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
                     ax1.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
                     ax1.legend(); ax1.grid(True, alpha=0.3)
-                    ax1.set_title('Material Particulado PM2.5', fontsize=14)
+                    ax1.set_title('Material Particulado PM2.5 — Previsto CAMS', fontsize=14)
 
+                    # PM10 — apenas dados previstos pelo CAMS
                     if not hist_data.empty:
-                        ax2.plot(hist_data['time'], hist_data['pm10'], 'o-', color='brown', label='PM10 Observado', markersize=6)
-                    if not forecast_data.empty:
-                        ax2.plot(forecast_data['time'], forecast_data['pm10'], 's--', color='sienna', label='PM10 Previsto', markersize=5, alpha=0.8)
+                        ax2.plot(hist_data['time'], hist_data['pm10'], 'o-', color='brown',
+                                 label='PM10 Previsto (CAMS)', markersize=6)
                     ax2.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
                     ax2.axhline(y=150, color='red', linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
                     ax2.set_ylabel('PM10 (μg/m³)', fontsize=12)
                     ax2.legend(); ax2.grid(True, alpha=0.3)
-                    ax2.set_title('Material Particulado PM10', fontsize=14)
+                    ax2.set_title('Material Particulado PM10 — Previsto CAMS', fontsize=14)
 
+                    # IQA — apenas dados previstos pelo CAMS
                     if not hist_data.empty:
-                        ax3.plot(hist_data['time'], hist_data['aqi'], 'o-', color='purple', label='IQA Observado', markersize=6)
-                    if not forecast_data.empty:
-                        ax3.plot(forecast_data['time'], forecast_data['aqi'], 's--', color='mediumpurple', label='IQA Previsto', markersize=5, alpha=0.8)
+                        ax3.plot(hist_data['time'], hist_data['aqi'], 'o-', color='purple',
+                                 label='IQA Previsto (CAMS)', markersize=6)
                     ax3.axhspan(0, 50, alpha=0.2, color='green', label='Boa')
                     ax3.axhspan(51, 100, alpha=0.2, color='yellow', label='Moderada')
                     ax3.axhspan(101, 150, alpha=0.2, color='orange', label='Insalubre p/ Sensíveis')
@@ -1193,14 +1174,14 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     ax3.set_ylabel('IQA', fontsize=12)
                     ax3.set_xlabel('Data/Hora', fontsize=12)
                     ax3.legend(); ax3.grid(True, alpha=0.3)
-                    ax3.set_title('Índice de Qualidade do Ar', fontsize=14)
+                    ax3.set_title('Índice de Qualidade do Ar — Previsto CAMS', fontsize=14)
                     ax3.xaxis.set_major_formatter(mdates.DateFormatter('%d/%m %H:%M'))
                     plt.xticks(rotation=45)
                     plt.tight_layout()
                     st.pyplot(fig)
 
                 with col2:
-                    st.subheader("Estatísticas Atuais")
+                    st.subheader("Estatísticas das Previsões")
 
                     if not hist_data.empty:
                         curr_pm25 = hist_data['pm25'].iloc[-1]
@@ -1210,9 +1191,9 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                         curr_color = hist_data['aqi_color'].iloc[-1]
 
                         col_a, col_b = st.columns(2)
-                        col_a.metric("PM2.5 Atual", f"{curr_pm25:.1f} μg/m³")
-                        col_b.metric("PM10 Atual", f"{curr_pm10:.1f} μg/m³")
-                        st.metric("IQA Atual", f"{curr_aqi:.0f}")
+                        col_a.metric("PM2.5 Previsto", f"{curr_pm25:.1f} μg/m³")
+                        col_b.metric("PM10 Previsto", f"{curr_pm10:.1f} μg/m³")
+                        st.metric("IQA", f"{curr_aqi:.0f}")
 
                         st.markdown(f"""
                         <div style="padding:15px; border-radius:10px; background-color:{curr_color}; 
@@ -1234,7 +1215,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                         else:
                             st.error("Evite todas as atividades ao ar livre")
 
-                        st.subheader("Comparação com Padrões")
+                        st.subheader("Comparação com Padrões OMS")
                         st.progress(min(curr_pm25 / 25, 1.0))
                         st.caption(f"PM2.5: {curr_pm25:.1f}/25 μg/m³ (Limite OMS 24h)")
                         st.progress(min(curr_pm10 / 50, 1.0))
@@ -1276,7 +1257,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                         3. **{top_cities.iloc[2]['cidade']}**: IQA {top_cities.iloc[2]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[2]['pm25_max']:.1f} μg/m³
                         """)
 
-                    st.markdown("### Ranking de Qualidade do Ar por Município")
+                    st.markdown("### Ranking de Qualidade do Ar por Município (Previsões CAMS)")
                     top_cities_display = top_cities.rename(columns={
                         'cidade': 'Município', 'pm25_max': 'PM2.5 Máx (μg/m³)',
                         'pm10_max': 'PM10 Máx (μg/m³)', 'aqi_max': 'IQA Máx',
@@ -1284,18 +1265,18 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     })
                     st.dataframe(style_aqi_table(top_cities_display), use_container_width=True)
 
-                    st.subheader("Material Particulado - 10 Municípios Mais Críticos")
+                    st.subheader("Material Particulado Previsto — 10 Municípios Mais Críticos")
                     fig, ax = plt.subplots(1, 1, figsize=(14, 8))
                     top10 = top_cities.head(10)
                     x_pos = np.arange(len(top10))
                     width = 0.35
 
-                    bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width, color='darkblue', alpha=0.8, label='PM2.5')
-                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, color='brown', alpha=0.8, label='PM10')
+                    bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width, color='darkblue', alpha=0.8, label='PM2.5 Previsto')
+                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, color='brown', alpha=0.8, label='PM10 Previsto')
                     ax.set_xticks(x_pos)
                     ax.set_xticklabels(top10['cidade'], rotation=45, ha='right')
                     ax.set_ylabel('Concentração (μg/m³)', fontsize=12)
-                    ax.set_title('Material Particulado Máximo Previsto até ' + end_date.strftime('%d/%m/%Y'), fontsize=14)
+                    ax.set_title('PM2.5 e PM10 Máximos Previstos até ' + end_date.strftime('%d/%m/%Y') + ' (CAMS)', fontsize=14)
                     ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite PM2.5 OMS (25 μg/m³)')
                     ax.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='Limite PM10 OMS (50 μg/m³)')
                     ax.legend(); ax.grid(True, alpha=0.3)
@@ -1328,54 +1309,40 @@ st.markdown("---")
 st.markdown("""
 ### Informações Importantes
 
-**Sobre os Dados Diretos:**
-- As concentrações de PM2.5/PM10 são obtidas diretamente do CAMS, sem conversões
-- Dados calibrados e validados continuamente com estações de monitoramento
-- Precisão superior aos métodos de conversão de AOD
+**Sobre os Dados:**
+- As previsões de PM2.5/PM10 são geradas pelo modelo CAMS (Copernicus Atmosphere Monitoring Service)
+- Dados validados continuamente com estações de monitoramento globais
+- Resolução espacial: ~0.4° × 0.4° (aprox. 44 km) · Resolução temporal: 3 horas
 
 **Novidades desta versão:**
 - Contornos municipais destacados nas animações
 - Município selecionado evidenciado em vermelho
 - Animações separadas para PM2.5 e PM10
 - Previsões limitadas à data final escolhida pelo usuário
-- Relatório completo por e-mail após cada análise (séries históricas, previsões, ranking estadual e GIFs em anexo)
+- Regiões com concentração < 1 μg/m³ exibidas em branco nos mapas
 
 **Dados Fornecidos por:**
-- CAMS (Copernicus Atmosphere Monitoring Service) - União Europeia
-- Processamento: Sistema desenvolvido para monitoramento ambiental de MS
+- CAMS (Copernicus Atmosphere Monitoring Service) — União Europeia
 
 **Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
 """)
 
 with st.expander("Suporte e Informações Técnicas"):
-    status_email = "✅ Configurado" if _email_configurado else "❌ Não configurado"
     st.markdown(f"""
     ### Suporte Técnico
-
-    **Status do e-mail:** {status_email}
 
     **Parâmetros do Sistema:**
     - Resolução espacial: ~0.4° x 0.4° (aprox. 44 km)
     - Resolução temporal: 3 horas
     - Previsão: Até a data final selecionada pelo usuário
-    - Variáveis principais: PM2.5 e PM10 diretos
+    - Variáveis principais: PM2.5 e PM10 (previsões CAMS)
     - Contornos: Municípios de MS com destaque do selecionado
+    - Limiar de exibição nos mapas: 1 μg/m³ (abaixo = branco)
 
-    **O relatório por e-mail inclui:**
-    - Métricas atuais e previsão do município selecionado
-    - Séries temporais (histórico + previsão)
-    - Estatísticas do período (mín/méd/máx de PM2.5, PM10 e IQA)
-    - Comparação com padrões OMS (barras de progresso)
-    - Ranking dos 15 municípios mais críticos do estado
-    - Escala completa do IQA com recomendações
-    - Animações GIF de PM2.5 e PM10 em anexo
-    - Alerta estadual quando IQA previsto > 100
-
-    **Vantagens dos Dados Diretos:**
-    - Eliminação de incertezas de conversão AOD para PM
-    - Calibração contínua com estações de superfície
-    - Maior precisão para tomada de decisões
-    - Validação internacional
+    **Vantagens das Previsões CAMS:**
+    - Calibração contínua com estações de superfície globais
+    - Validação internacional rigorosa
+    - Cobertura espacial completa para toda a região
 
     **Para Melhor Precisão:**
     - Use dados de múltiplos pontos temporais

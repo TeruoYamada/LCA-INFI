@@ -546,12 +546,12 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
                          fontsize=16, pad=20, weight='bold')
 
     if pm_type == "PM2.5":
-        ax.text(0.02, 0.02, 'Limites: OMS=25 μg/m³, EPA=35 μg/m³  |  Branco: < 1 μg/m³',
+        ax.text(0.02, 0.02, 'Limites: OMS=25 μg/m³, EPA=35 μg/m³',
                 transform=ax.transAxes, fontsize=10, weight='bold',
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='orange'),
                 verticalalignment='bottom')
     else:
-        ax.text(0.02, 0.02, 'Limites: OMS=50 μg/m³, EPA=150 μg/m³  |  Branco: < 1 μg/m³',
+        ax.text(0.02, 0.02, 'Limites: OMS=50 μg/m³, EPA=150 μg/m³',
                 transform=ax.transAxes, fontsize=10, weight='bold',
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='orange'),
                 verticalalignment='bottom')
@@ -1337,7 +1337,6 @@ with st.expander("Suporte e Informações Técnicas"):
     - Previsão: Até a data final selecionada pelo usuário
     - Variáveis principais: PM2.5 e PM10 (previsões CAMS)
     - Contornos: Municípios de MS com destaque do selecionado
-    - Limiar de exibição nos mapas: 1 μg/m³ (abaixo = branco)
 
     **Vantagens das Previsões CAMS:**
     - Calibração contínua com estações de superfície globais

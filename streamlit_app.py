@@ -23,19 +23,12 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import base64
-import logging
-
-# ── APScheduler ─────────────────────────────────────────────────────────────
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
-# ── Credenciais de e-mail ────────────────────────────────────────────────────
 try:
     EMAIL_REMETENTE     = st.secrets["email"]["remetente"]
     EMAIL_SENHA_APP     = st.secrets["email"]["senha_app"]
+    # Suporte a múltiplos destinatários: pode ser string única ou lista
     _dest_raw           = st.secrets["email"]["destinatario"]
     if isinstance(_dest_raw, str):
         EMAIL_DESTINATARIOS = [e.strip() for e in _dest_raw.split(",") if e.strip()]
@@ -47,7 +40,6 @@ except KeyError:
     _email_configurado  = False
 
 
-# ── Envio de relatório por e-mail ────────────────────────────────────────────
 def enviar_relatorio_email(
     cidade, df_timeseries, df_forecast, top_pollution_df,
     start_date, end_date,
@@ -449,7 +441,6 @@ def enviar_relatorio_email(
         return False
 
 
-# ── Animação de PM ────────────────────────────────────────────────────────────
 def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, start_date, pm_type="PM2.5"):
     import matplotlib.pyplot as plt
     import cartopy.crs as ccrs
@@ -482,6 +473,7 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
     vmin_raw = float(da_pm.min().values)
     vmax_raw = float(da_pm.max().values)
 
+    # Limiar: valores abaixo de 1 μg/m³ aparecem em branco
     THRESHOLD = 1.0
 
     if pm_type == "PM2.5":
@@ -493,6 +485,7 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         vmax = min(300, vmax_raw + 15)
         colormap_name = 'Oranges'
 
+    # Colormap com branco para valores abaixo do limiar
     import copy
     cmap_obj = plt.cm.get_cmap(colormap_name).copy()
     cmap_obj.set_under('white')
@@ -537,6 +530,7 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         first_frame_data = da_pm.isel({time_dim: 0}).values
         first_frame_time = pd.to_datetime(da_pm[time_dim].values[0])
 
+    # Mascarar valores abaixo do limiar
     masked_first = np.ma.masked_less(first_frame_data, THRESHOLD)
 
     im = ax.pcolormesh(ds.longitude, ds.latitude, masked_first,
@@ -544,7 +538,7 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
                        transform=ccrs.PlateCarree(), alpha=0.8)
 
     cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal',
-                        extend='min')
+                        extend='min')  # extend='min' indica que < vmin é branco
     cbar.set_label(f'{pm_type} (μg/m³)', fontsize=12, weight='bold')
     cbar.ax.tick_params(labelsize=10)
 
@@ -577,6 +571,7 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
                 frame_data = da_pm.isel({time_dim: t_idx}).values
                 frame_time = pd.to_datetime(da_pm[time_dim].values[t_idx])
 
+            # Mascarar abaixo do limiar em cada frame
             masked_frame = np.ma.masked_less(frame_data, THRESHOLD)
             im.set_array(masked_frame.ravel())
             title.set_text(f'{pm_type} (previsto CAMS) - {city}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
@@ -591,7 +586,6 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
     return fig, animate, actual_frames
 
 
-# ── Extração de série temporal ────────────────────────────────────────────────
 def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     lat_idx = np.abs(ds.latitude.values - lat).argmin()
     lon_idx = np.abs(ds.longitude.values - lon).argmin()
@@ -660,7 +654,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
         return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category'])
 
 
-# ── Cálculo de IQA ────────────────────────────────────────────────────────────
 def calculate_aqi(pm25, pm10):
     pm25_breakpoints = [
         (0, 12, 0, 50), (12.1, 35.4, 51, 100), (35.5, 55.4, 101, 150),
@@ -693,7 +686,6 @@ def calculate_aqi(pm25, pm10):
         return aqi, "Perigosa", "maroon"
 
 
-# ── Previsão com regressão linear ─────────────────────────────────────────────
 def predict_future_values(df, days=5, max_date=None):
     if len(df) < 3:
         return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'type'])
@@ -751,7 +743,6 @@ def predict_future_values(df, days=5, max_date=None):
     return result
 
 
-# ── Análise de todas as cidades (com barra de progresso na UI) ────────────────
 def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
     cities_results = []
     progress_bar = st.progress(0)
@@ -793,7 +784,6 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
         return pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
 
 
-# ── Utilitários de tabela ─────────────────────────────────────────────────────
 def get_aqi_color(aqi_value):
     if aqi_value <= 50:    return '#00e400'
     elif aqi_value <= 100: return '#ffff00'
@@ -811,10 +801,8 @@ def style_aqi_table(df):
     return df.style.apply(apply_styles, axis=1)
 
 
-# ── Configuração da página ────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_icon="🌍")
 
-# ── Credenciais CDS ───────────────────────────────────────────────────────────
 try:
     ads_url = st.secrets["ads"]["url"]
     ads_key = st.secrets["ads"]["key"]
@@ -824,7 +812,6 @@ except Exception as e:
     st.stop()
 
 
-# ── Shapes dos municípios de MS ───────────────────────────────────────────────
 @st.cache_data
 def load_ms_municipalities():
     try:
@@ -845,7 +832,6 @@ def load_ms_municipalities():
         return create_fallback_shapefile()
 
 
-# ── Dicionário de municípios ──────────────────────────────────────────────────
 cities = {
     "Água Clara": [-20.4453, -52.8792], "Alcinópolis": [-18.3255, -53.7042],
     "Amambai": [-23.1058, -55.2253], "Anastácio": [-20.4823, -55.8104],
@@ -889,7 +875,6 @@ cities = {
     "Vicentina": [-22.4098, -54.4415]
 }
 
-
 def create_fallback_shapefile():
     from shapely.geometry import Polygon
     municipalities_data = []
@@ -904,156 +889,6 @@ def create_fallback_shapefile():
     return gpd.GeoDataFrame(municipalities_data, crs="EPSG:4326")
 
 
-# ── Singleton do scheduler (persiste durante toda a vida do processo) ─────────
-@st.cache_resource
-def get_scheduler():
-    """Cria e inicia o BackgroundScheduler uma única vez por processo do servidor."""
-    scheduler = BackgroundScheduler(timezone="America/Campo_Grande")
-    scheduler.start()
-    return scheduler
-
-
-# ── Job automático de 3 horas ─────────────────────────────────────────────────
-def auto_report_job(city_name: str, lat: float, lon: float,
-                    days_back: int = 2, days_forward: int = 5,
-                    include_pm10_gif: bool = True):
-    """
-    Executado em background a cada 3 horas.
-    Baixa dados CAMS, calcula IQA para todos os municípios de MS e envia e-mail.
-    Não usa nenhum componente de UI do Streamlit.
-    """
-    filename  = None
-    gif_pm25  = None
-    gif_pm10  = None
-
-    try:
-        job_start      = datetime.now()
-        job_date_start = (job_start - timedelta(days=days_back)).date()
-        job_date_end   = (job_start + timedelta(days=days_forward)).date()
-
-        dataset    = "cams-global-atmospheric-composition-forecasts"
-        hours_list = [f"{h:02d}:00" for h in range(0, 24, 3)]
-        city_bounds = {"north": -17.0, "south": -24.5, "east": -50.5, "west": -58.5}
-
-        request = {
-            "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
-            "date": f"{job_date_start}/{job_date_end}",
-            "time": hours_list,
-            "leadtime_hour": ["0", "24", "48", "72", "96", "120"],
-            "type": ["forecast"],
-            "format": "netcdf",
-            "area": [city_bounds["north"], city_bounds["west"],
-                     city_bounds["south"], city_bounds["east"]],
-        }
-
-        filename = f"auto_PM_{city_name}_{job_date_start}.nc"
-        client.retrieve(dataset, request).download(filename)
-
-        ds = xr.open_dataset(filename)
-        variable_names = list(ds.data_vars)
-        pm25_var = next((v for v in variable_names if "pm2p5" in v.lower() or "2.5" in v), None)
-        pm10_var  = next((v for v in variable_names if "pm10"  in v.lower() or "10um" in v), None)
-
-        if not pm25_var or not pm10_var:
-            print("[auto_report_job] Variáveis PM não encontradas.")
-            return
-
-        # Corrigir unidades
-        for var in [pm25_var, pm10_var]:
-            max_val = float(ds[var].max().values)
-            if max_val < 1e-6:
-                ds[var] = ds[var] * 1e9
-            elif max_val < 1e-3:
-                ds[var] = ds[var] * 1e6
-            elif max_val > 1000:
-                ds[var] = ds[var] / 1000
-
-        # Série temporal do município selecionado
-        df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)
-        if df_timeseries.empty:
-            print(f"[auto_report_job] Série temporal vazia para {city_name}.")
-            return
-
-        df_forecast = predict_future_values(df_timeseries, days=days_forward,
-                                            max_date=job_date_end)
-
-        # Análise silenciosa de todos os municípios (sem st.progress)
-        cities_results = []
-        for cname, (clat, clon) in cities.items():
-            df_c = extract_pm_timeseries(ds, clat, clon, pm25_var, pm10_var)
-            if df_c.empty:
-                continue
-            df_cf = predict_future_values(df_c, days=days_forward, max_date=job_date_end)
-            fc    = df_cf[df_cf["type"] == "forecast"]
-            if fc.empty:
-                continue
-            idx_max = fc["aqi"].idxmax()
-            cities_results.append({
-                "cidade":    cname,
-                "pm25_max":  round(float(fc["pm25"].max()), 1),
-                "pm10_max":  round(float(fc["pm10"].max()), 1),
-                "aqi_max":   round(float(fc["aqi"].max()), 0),
-                "data_max":  fc.loc[idx_max, "time"].strftime("%d/%m/%Y %H:%M"),
-                "categoria": fc.loc[idx_max, "aqi_category"],
-            })
-
-        top_pollution = (pd.DataFrame(cities_results)
-                         .sort_values("aqi_max", ascending=False)
-                         .reset_index(drop=True)
-                         if cities_results else pd.DataFrame())
-
-        # Shapes (cacheado)
-        shapes = load_ms_municipalities()
-
-        # GIF PM2.5
-        anim_result = create_pm_animation(ds, pm25_var, city_name, lat, lon,
-                                          shapes, job_date_start, "PM2.5")
-        if anim_result:
-            fig25, anim25, frames25 = anim_result
-            ani = animation.FuncAnimation(fig25, anim25, frames=frames25,
-                                          interval=500, blit=True)
-            gif_pm25 = f"auto_PM25_{city_name}_{job_date_start}.gif"
-            ani.save(gif_pm25, writer=animation.PillowWriter(fps=2))
-            plt.close(fig25)
-
-        # GIF PM10 (opcional)
-        if include_pm10_gif:
-            anim_result10 = create_pm_animation(ds, pm10_var, city_name, lat, lon,
-                                                shapes, job_date_start, "PM10")
-            if anim_result10:
-                fig10, anim10, frames10 = anim_result10
-                ani10 = animation.FuncAnimation(fig10, anim10, frames=frames10,
-                                                interval=500, blit=True)
-                gif_pm10 = f"auto_PM10_{city_name}_{job_date_start}.gif"
-                ani10.save(gif_pm10, writer=animation.PillowWriter(fps=2))
-                plt.close(fig10)
-
-        # Envia e-mail
-        enviar_relatorio_email(
-            cidade=city_name,
-            df_timeseries=df_timeseries,
-            df_forecast=df_forecast,
-            top_pollution_df=top_pollution,
-            start_date=datetime.combine(job_date_start, datetime.min.time()),
-            end_date=datetime.combine(job_date_end,     datetime.min.time()),
-            gif_pm25_path=gif_pm25,
-            gif_pm10_path=gif_pm10,
-        )
-        print(f"[auto_report_job] Relatório enviado com sucesso para {city_name} em {datetime.now()}")
-
-    except Exception as e:
-        print(f"[auto_report_job] Erro: {e}")
-
-    finally:
-        for f in [filename, gif_pm25, gif_pm10]:
-            if f and os.path.exists(f):
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
-
-
-# ── Interface principal ───────────────────────────────────────────────────────
 st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
 st.markdown("""
 ### Sistema Integrado de Monitoramento da Qualidade do Ar
@@ -1067,16 +902,14 @@ para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 - Animações temporais para PM2.5 e PM10
 - Índice de Qualidade do Ar (IQA) calculado
 - Previsões limitadas à data final selecionada
-- Relatório automático por e-mail a cada 3 horas
 """)
 
 
-# ── Geração manual de análise ─────────────────────────────────────────────────
 def generate_pm_analysis():
     dataset = "cams-global-atmospheric-composition-forecasts"
 
     start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_str   = end_date.strftime('%Y-%m-%d')
+    end_date_str = end_date.strftime('%Y-%m-%d')
 
     hours = []
     current_hour = start_hour
@@ -1112,7 +945,7 @@ def generate_pm_analysis():
         ds = xr.open_dataset(filename)
         variable_names = list(ds.data_vars)
         pm25_var = next((var for var in variable_names if 'pm2p5' in var.lower() or '2.5' in var), None)
-        pm10_var  = next((var for var in variable_names if 'pm10'  in var.lower() or '10um' in var), None)
+        pm10_var = next((var for var in variable_names if 'pm10' in var.lower() or '10um' in var), None)
 
         if not pm25_var or not pm10_var:
             st.error("Variáveis de PM2.5 ou PM10 não encontradas nos dados.")
@@ -1165,7 +998,7 @@ def generate_pm_analysis():
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
             top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
 
-        # Envio silencioso do relatório por e-mail
+        # Envio silencioso do relatório por e-mail (sem exibir status ao usuário)
         try:
             enviar_relatorio_email(
                 cidade=city,
@@ -1204,12 +1037,9 @@ def generate_pm_analysis():
                 pass
 
 
-# ── Carrega shapes ────────────────────────────────────────────────────────────
 with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
 
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
 st.sidebar.header("Configurações")
 
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
@@ -1217,108 +1047,24 @@ if not available_cities:
     available_cities = list(cities.keys())
 
 default_city_index = available_cities.index("Campo Grande") if "Campo Grande" in available_cities else 0
-city = st.sidebar.selectbox("Selecione o município para análise detalhada",
-                             available_cities, index=default_city_index)
+city = st.sidebar.selectbox("Selecione o município para análise detalhada", available_cities, index=default_city_index)
 lat_center, lon_center = cities[city]
 
 st.sidebar.subheader("Período de Análise")
 start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
-end_date   = st.sidebar.date_input("Data Final",     datetime.today() + timedelta(days=5))
+end_date = st.sidebar.date_input("Data Final", datetime.today() + timedelta(days=5))
 
-all_hours  = list(range(0, 24, 3))
+all_hours = list(range(0, 24, 3))
 start_hour = st.sidebar.selectbox("Horário Inicial", all_hours, format_func=lambda x: f"{x:02d}:00")
-end_hour   = st.sidebar.selectbox("Horário Final",   all_hours, index=len(all_hours)-1,
-                                   format_func=lambda x: f"{x:02d}:00")
+end_hour = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours)-1, format_func=lambda x: f"{x:02d}:00")
 
 st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
-    animation_speed     = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
+    animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
     show_pm10_animation = st.checkbox("Gerar animação também para PM10", value=True)
 
-# ── Seção: Relatório Automático ───────────────────────────────────────────────
-st.sidebar.markdown("---")
-st.sidebar.subheader("📬 Relatório Automático")
+st.sidebar.info("Previsões CAMS\nEste sistema utiliza previsões de PM2.5 e PM10 do modelo CAMS, com contornos municipais destacados.")
 
-scheduler = get_scheduler()
-JOB_ID    = "auto_report_3h"
-
-# Restaura o estado do toggle entre reruns sem perder a informação
-if "auto_report_enabled" not in st.session_state:
-    st.session_state.auto_report_enabled = scheduler.get_job(JOB_ID) is not None
-
-auto_enabled = st.sidebar.toggle(
-    "Enviar relatório a cada 3 horas",
-    value=st.session_state.auto_report_enabled,
-    key="toggle_auto_report",
-)
-
-# Detecta mudança no toggle e age
-if auto_enabled != st.session_state.auto_report_enabled:
-    st.session_state.auto_report_enabled = auto_enabled
-
-    if auto_enabled:
-        # Remove job anterior (caso exista com configuração diferente)
-        if scheduler.get_job(JOB_ID):
-            scheduler.remove_job(JOB_ID)
-
-        # Captura as configurações atuais da sidebar no momento da ativação
-        _city_snap     = city
-        _lat_snap      = lat_center
-        _lon_snap      = lon_center
-        _pm10_snap     = show_pm10_animation
-
-        scheduler.add_job(
-            func=auto_report_job,
-            trigger=IntervalTrigger(hours=3),
-            id=JOB_ID,
-            name=f"Relatório automático — {_city_snap}",
-            kwargs={
-                "city_name":       _city_snap,
-                "lat":             _lat_snap,
-                "lon":             _lon_snap,
-                "days_back":       2,
-                "days_forward":    5,
-                "include_pm10_gif": _pm10_snap,
-            },
-            replace_existing=True,
-            max_instances=1,        # Impede sobreposição de execuções longas
-            misfire_grace_time=600, # Tolera até 10 min de atraso para disparar
-        )
-        st.sidebar.success(f"✅ Ativo para **{_city_snap}** — próximo envio em ~3 h")
-    else:
-        if scheduler.get_job(JOB_ID):
-            scheduler.remove_job(JOB_ID)
-        st.sidebar.info("⏹️ Relatório automático desativado.")
-
-# Status do job em execução
-job = scheduler.get_job(JOB_ID)
-if job:
-    next_run     = job.next_run_time
-    next_run_str = next_run.strftime("%d/%m %H:%M") if next_run else "—"
-    st.sidebar.caption(f"📅 Próximo envio: **{next_run_str}**")
-    st.sidebar.caption(f"🏙️ Município: **{job.kwargs.get('city_name', '—')}**")
-
-    # Botão para disparar imediatamente (útil para testes)
-    if st.sidebar.button("▶ Enviar agora (teste)", use_container_width=True):
-        with st.sidebar:
-            with st.spinner("Gerando e enviando relatório..."):
-                auto_report_job(**job.kwargs)
-        st.sidebar.success("📨 Relatório enviado!")
-
-st.sidebar.info(
-    "O relatório automático roda em segundo plano enquanto o app estiver ativo. "
-    "Ele baixa dados CAMS, calcula IQA para todos os municípios e envia o "
-    "e-mail com GIFs anexados a cada 3 horas."
-)
-
-st.sidebar.info(
-    "Previsões CAMS\n"
-    "Este sistema utiliza previsões de PM2.5 e PM10 do modelo CAMS, "
-    "com contornos municipais destacados."
-)
-
-
-# ── Botão de análise manual ───────────────────────────────────────────────────
 st.markdown("### Iniciar Análise Completa")
 st.markdown(f"Clique no botão abaixo para gerar análise de PM2.5 e PM10 centralizada em **{city}** com contornos municipais.")
 
@@ -1397,31 +1143,34 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
 
                     hist_data = df_combined[df_combined['type'] == 'historical']
 
+                    # PM2.5 — apenas dados previstos pelo CAMS (sem linha de "previsto futuro")
                     if not hist_data.empty:
                         ax1.plot(hist_data['time'], hist_data['pm25'], 'o-', color='darkblue',
                                  label='PM2.5 Previsto (CAMS)', markersize=6)
                     ax1.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (25 μg/m³)')
-                    ax1.axhline(y=35, color='red',    linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
+                    ax1.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
                     ax1.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
                     ax1.legend(); ax1.grid(True, alpha=0.3)
                     ax1.set_title('Material Particulado PM2.5 — Previsto CAMS', fontsize=14)
 
+                    # PM10 — apenas dados previstos pelo CAMS
                     if not hist_data.empty:
                         ax2.plot(hist_data['time'], hist_data['pm10'], 'o-', color='brown',
                                  label='PM10 Previsto (CAMS)', markersize=6)
-                    ax2.axhline(y=50,  color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
-                    ax2.axhline(y=150, color='red',    linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
+                    ax2.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
+                    ax2.axhline(y=150, color='red', linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
                     ax2.set_ylabel('PM10 (μg/m³)', fontsize=12)
                     ax2.legend(); ax2.grid(True, alpha=0.3)
                     ax2.set_title('Material Particulado PM10 — Previsto CAMS', fontsize=14)
 
+                    # IQA — apenas dados previstos pelo CAMS
                     if not hist_data.empty:
                         ax3.plot(hist_data['time'], hist_data['aqi'], 'o-', color='purple',
                                  label='IQA Previsto (CAMS)', markersize=6)
-                    ax3.axhspan(0,   50,  alpha=0.2, color='green',  label='Boa')
-                    ax3.axhspan(51,  100, alpha=0.2, color='yellow', label='Moderada')
+                    ax3.axhspan(0, 50, alpha=0.2, color='green', label='Boa')
+                    ax3.axhspan(51, 100, alpha=0.2, color='yellow', label='Moderada')
                     ax3.axhspan(101, 150, alpha=0.2, color='orange', label='Insalubre p/ Sensíveis')
-                    ax3.axhspan(151, 200, alpha=0.2, color='red',    label='Insalubre')
+                    ax3.axhspan(151, 200, alpha=0.2, color='red', label='Insalubre')
                     ax3.set_ylabel('IQA', fontsize=12)
                     ax3.set_xlabel('Data/Hora', fontsize=12)
                     ax3.legend(); ax3.grid(True, alpha=0.3)
@@ -1435,15 +1184,15 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     st.subheader("Estatísticas das Previsões")
 
                     if not hist_data.empty:
-                        curr_pm25     = hist_data['pm25'].iloc[-1]
-                        curr_pm10     = hist_data['pm10'].iloc[-1]
-                        curr_aqi      = hist_data['aqi'].iloc[-1]
+                        curr_pm25 = hist_data['pm25'].iloc[-1]
+                        curr_pm10 = hist_data['pm10'].iloc[-1]
+                        curr_aqi = hist_data['aqi'].iloc[-1]
                         curr_category = hist_data['aqi_category'].iloc[-1]
-                        curr_color    = hist_data['aqi_color'].iloc[-1]
+                        curr_color = hist_data['aqi_color'].iloc[-1]
 
                         col_a, col_b = st.columns(2)
                         col_a.metric("PM2.5 Previsto", f"{curr_pm25:.1f} μg/m³")
-                        col_b.metric("PM10 Previsto",  f"{curr_pm10:.1f} μg/m³")
+                        col_b.metric("PM10 Previsto", f"{curr_pm10:.1f} μg/m³")
                         st.metric("IQA", f"{curr_aqi:.0f}")
 
                         st.markdown(f"""
@@ -1488,12 +1237,12 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     top_cities = results['top_pollution'].head(20)
 
                     critical_cities = top_cities[top_cities['aqi_max'] > 100]
-                    very_critical   = top_cities[top_cities['aqi_max'] > 150]
+                    very_critical = top_cities[top_cities['aqi_max'] > 150]
 
                     col1, col2, col3 = st.columns(3)
-                    col1.metric("Cidades em Alerta",    len(critical_cities))
-                    col2.metric("Condição Insalubre",   len(very_critical))
-                    col3.metric("IQA Máximo Previsto",  f"{top_cities['aqi_max'].max():.0f}")
+                    col1.metric("Cidades em Alerta", len(critical_cities))
+                    col2.metric("Condição Insalubre", len(very_critical))
+                    col3.metric("IQA Máximo Previsto", f"{top_cities['aqi_max'].max():.0f}")
 
                     if len(critical_cities) > 0 and len(top_cities) >= 3:
                         st.error(f"""
@@ -1523,21 +1272,19 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     width = 0.35
 
                     bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width, color='darkblue', alpha=0.8, label='PM2.5 Previsto')
-                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, color='brown',    alpha=0.8, label='PM10 Previsto')
+                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, color='brown', alpha=0.8, label='PM10 Previsto')
                     ax.set_xticks(x_pos)
                     ax.set_xticklabels(top10['cidade'], rotation=45, ha='right')
                     ax.set_ylabel('Concentração (μg/m³)', fontsize=12)
                     ax.set_title('PM2.5 e PM10 Máximos Previstos até ' + end_date.strftime('%d/%m/%Y') + ' (CAMS)', fontsize=14)
                     ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite PM2.5 OMS (25 μg/m³)')
-                    ax.axhline(y=50, color='red',    linestyle='--', alpha=0.7, label='Limite PM10 OMS (50 μg/m³)')
+                    ax.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='Limite PM10 OMS (50 μg/m³)')
                     ax.legend(); ax.grid(True, alpha=0.3)
 
                     for bar, val in zip(bars1, top10['pm25_max']):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
-                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
+                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.0f}', ha='center', va='bottom', fontsize=9)
                     for bar, val in zip(bars2, top10['pm10_max']):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
-                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
+                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.0f}', ha='center', va='bottom', fontsize=9)
 
                     plt.tight_layout()
                     st.pyplot(fig)
@@ -1558,7 +1305,6 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
         st.code(traceback.format_exc())
 
 
-# ── Rodapé ────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown("""
 ### Informações Importantes
@@ -1574,7 +1320,6 @@ st.markdown("""
 - Animações separadas para PM2.5 e PM10
 - Previsões limitadas à data final escolhida pelo usuário
 - Regiões com concentração < 1 μg/m³ exibidas em branco nos mapas
-- **Relatório automático por e-mail a cada 3 horas via APScheduler**
 
 **Dados Fornecidos por:**
 - CAMS (Copernicus Atmosphere Monitoring Service) — União Europeia
@@ -1592,13 +1337,6 @@ with st.expander("Suporte e Informações Técnicas"):
     - Previsão: Até a data final selecionada pelo usuário
     - Variáveis principais: PM2.5 e PM10 (previsões CAMS)
     - Contornos: Municípios de MS com destaque do selecionado
-
-    **Relatório Automático:**
-    - Tecnologia: APScheduler BackgroundScheduler
-    - Intervalo: 3 horas
-    - Ativação: Toggle na sidebar (persiste enquanto o servidor estiver ativo)
-    - Conteúdo: HTML completo + GIFs PM2.5 e PM10 anexados
-    - Botão de teste: dispara o relatório imediatamente sem aguardar o ciclo
 
     **Vantagens das Previsões CAMS:**
     - Calibração contínua com estações de superfície globais

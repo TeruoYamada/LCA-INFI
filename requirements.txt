@@ -12,3 +12,4 @@ pandas
 scikit-learn
 seaborn
 plotly
+APScheduler==3.10.4

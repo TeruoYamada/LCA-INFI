@@ -868,6 +868,15 @@ def create_fallback_shapefile():
 
 
 # ── NOVO: função de relatório automático ───────────────────────────────────────
+def keep_alive():
+    APP_URL = "https://lca-infi-ufms.streamlit.app/"
+
+    try:
+        response = requests.get(APP_URL, timeout=30)
+        print(f"[KEEPALIVE] Ping enviado: {response.status_code}")
+    except Exception as e:
+        print(f"[KEEPALIVE] Erro: {e}")
+
 def scheduled_report_campo_grande():
     """Gera e envia o relatório de Campo Grande automaticamente (chamada pelo APScheduler)."""
     cidade_auto  = "Campo Grande"
@@ -1028,19 +1037,34 @@ st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_ico
 
 # ── NOVO: inicialização do scheduler (uma única vez por processo) ──────────────
 if "scheduler_started" not in st.session_state:
+
     _sched = BackgroundScheduler(timezone="America/Campo_Grande")
+
+    # RELATÓRIO AUTOMÁTICO
     _sched.add_job(
         scheduled_report_campo_grande,
         trigger=IntervalTrigger(hours=3),
         id="relatorio_campo_grande",
         name="Relatório automático Campo Grande",
         replace_existing=True,
-        max_instances=1,        # evita sobreposição se uma rodada demorar
-        misfire_grace_time=600, # tolera até 10 min de atraso
+        max_instances=1,
+        misfire_grace_time=600,
     )
+
+    # AUTO PING
+    _sched.add_job(
+        keep_alive,
+        trigger=IntervalTrigger(minutes=5),
+        id="keepalive_streamlit",
+        name="Keep Alive Streamlit",
+        replace_existing=True,
+        max_instances=1,
+    )
+
     _sched.start()
+
     st.session_state["scheduler_started"] = True
-    st.session_state["scheduler_obj"]     = _sched
+    st.session_state["scheduler_obj"] = _sched
 # ──────────────────────────────────────────────────────────────────────────────
 
 

@@ -23,6 +23,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import base64
+import request
 
 # ── NOVO: imports do scheduler ─────────────────────────────────────────────────
 from apscheduler.schedulers.background import BackgroundScheduler

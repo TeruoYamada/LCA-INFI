@@ -12,5 +12,5 @@ pandas
 scikit-learn
 seaborn
 plotly
+requests==2.32.3
 APScheduler==3.10.4
-APScheduler

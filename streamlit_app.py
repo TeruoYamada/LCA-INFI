@@ -648,9 +648,11 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
         df = pd.DataFrame({'time': times, 'pm25': pm25_values, 'pm10': pm10_values})
         df = df.sort_values('time').reset_index(drop=True)
 
-        # ── Interpola NaN residuais (máx 2 consecutivos) ──────────────────
-        df['pm25'] = pd.Series(df['pm25']).interpolate(method='linear', limit=2).fillna(method='bfill').fillna(method='ffill')
-        df['pm10'] = pd.Series(df['pm10']).interpolate(method='linear', limit=2).fillna(method='bfill').fillna(method='ffill')
+        # ── CORREÇÃO: substituído fillna(method=...) por .bfill().ffill() ──
+        # Compatível com pandas >= 2.2 que removeu o argumento 'method' do fillna()
+        df['pm25'] = pd.Series(df['pm25']).interpolate(method='linear', limit=2).bfill().ffill()
+        df['pm10'] = pd.Series(df['pm10']).interpolate(method='linear', limit=2).bfill().ffill()
+        # ────────────────────────────────────────────────────────────────────
 
         # Remove linhas que ainda têm NaN após interpolação
         df = df.dropna(subset=['pm25', 'pm10']).reset_index(drop=True)
@@ -702,13 +704,12 @@ def predict_future_values(df, days=5, max_date=None):
     df_hist = df.copy()
     df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
 
-    # ── CORREÇÃO: remove NaN antes do fit ─────────────────────────────────────
+    # ── Remove NaN antes do fit ────────────────────────────────────────────────
     mask_pm25 = ~np.isnan(df_hist['pm25'].values)
     mask_pm10 = ~np.isnan(df_hist['pm10'].values)
     mask_valid = mask_pm25 & mask_pm10
 
     if mask_valid.sum() < 2:
-        # Dados insuficientes para regressão — retorna apenas histórico
         df_hist['type'] = 'historical'
         return df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
 
@@ -917,9 +918,8 @@ def scheduled_report_campo_grande():
     cidade_auto     = "Campo Grande"
     lat_auto, lon_auto = cities[cidade_auto]
 
-    # Início = agora (data e hora correntes, arredondado para baixo a 3h)
     agora        = datetime.now()
-    hora_ref     = (agora.hour // 3) * 3          # horário CAMS mais recente
+    hora_ref     = (agora.hour // 3) * 3
     start_auto   = agora.replace(hour=hora_ref, minute=0, second=0, microsecond=0)
     end_auto     = start_auto + timedelta(days=5)
 
@@ -941,18 +941,16 @@ def scheduled_report_campo_grande():
     try:
         request = {
             "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
-            # data inicial = hoje; CAMS retornará a rodada mais recente disponível
             "date": f"{start_auto.strftime('%Y-%m-%d')}/{end_auto.strftime('%Y-%m-%d')}",
             "time": [f"{h:02d}:00" for h in range(0, 24, 3)],
             "leadtime_hour": ["0", "24", "48", "72", "96", "120"],
             "type": ["forecast"],
             "format": "netcdf",
-            "area": [-17.0, -58.5, -24.5, -50.5],   # N, W, S, E
+            "area": [-17.0, -58.5, -24.5, -50.5],
         }
 
         filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d_%H%M')}.nc"
 
-        # ── Precisa de 'client' no escopo global ──────────────────────────
         client.retrieve(dataset, request).download(filename)
 
         ds = xr.open_dataset(filename)
@@ -966,7 +964,6 @@ def scheduled_report_campo_grande():
         df_ts  = extract_pm_timeseries(ds, lat_auto, lon_auto, pm25_var, pm10_var)
         df_fct = predict_future_values(df_ts, days=5, max_date=end_auto)
 
-        # Normaliza unidades no dataset para o ranking
         for var in [pm25_var, pm10_var]:
             max_val = float(ds[var].max().values)
             if max_val < 1e-6:
@@ -976,7 +973,6 @@ def scheduled_report_campo_grande():
             elif max_val > 1000:
                 ds[var] = ds[var] / 1000
 
-        # Ranking estadual (sem st.progress — roda em background)
         top_df = pd.DataFrame(columns=["cidade", "pm25_max", "pm10_max", "aqi_max", "data_max", "categoria"])
         try:
             results_list = []
@@ -1006,7 +1002,6 @@ def scheduled_report_campo_grande():
         except Exception as e_rank:
             print(f"[Scheduler] Erro no ranking estadual: {e_rank}")
 
-        # Animações GIF
         ms_shapes_sched = load_ms_municipalities()
 
         for pm_var, pm_type, gif_attr in [
@@ -1067,7 +1062,6 @@ st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_ico
 if "scheduler_started" not in st.session_state:
     _sched = BackgroundScheduler(timezone="America/Campo_Grande")
 
-    # Relatório automático: 06h, 12h e 18h (Campo Grande)
     _sched.add_job(
         scheduled_report_campo_grande,
         trigger=CronTrigger(hour="6,12,18", minute=0, timezone="America/Campo_Grande"),
@@ -1078,7 +1072,6 @@ if "scheduler_started" not in st.session_state:
         misfire_grace_time=600,
     )
 
-    # Keep-alive: a cada 5 minutos
     _sched.add_job(
         keep_alive,
         trigger=IntervalTrigger(minutes=5),

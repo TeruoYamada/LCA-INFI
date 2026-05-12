@@ -23,16 +23,15 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import base64
-import requests
 
-# ── NOVO: imports do scheduler ─────────────────────────────────────────────────
+# ── Scheduler ─────────────────────────────────────────────────────────────────
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 import threading
 import logging
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 # ──────────────────────────────────────────────────────────────────────────────
-
 
 try:
     EMAIL_REMETENTE     = st.secrets["email"]["remetente"]
@@ -47,9 +46,8 @@ except KeyError:
     EMAIL_DESTINATARIOS = []
     _email_configurado  = False
 
-
-# ── NOVO: variáveis globais do scheduler ───────────────────────────────────────
-_scheduler_log: list = []   # cada item: {"inicio": str, "status": str, "detalhe": str}
+# ── Variáveis globais do scheduler ────────────────────────────────────────────
+_scheduler_log: list = []
 _log_lock = threading.Lock()
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -456,12 +454,6 @@ def enviar_relatorio_email(
 
 
 def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, start_date, pm_type="PM2.5"):
-    import matplotlib.pyplot as plt
-    import cartopy.crs as ccrs
-    import cartopy.feature as cfeature
-    import numpy as np
-    import pandas as pd
-
     da_pm = ds[pm_var]
 
     if da_pm.max().values < 1e-6:
@@ -569,9 +561,6 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
 
     def animate(i):
         try:
-            frame_data = None
-            frame_time = None
-
             if 'forecast_period' in da_pm.dims and 'forecast_reference_time' in da_pm.dims:
                 fp_idx = min(0, len(da_pm.forecast_period) - 1)
                 frt_idx = min(i, len(da_pm.forecast_reference_time) - 1)
@@ -585,14 +574,12 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
             masked_frame = np.ma.masked_less(frame_data, THRESHOLD)
             im.set_array(masked_frame.ravel())
             title.set_text(f'{pm_type} (previsto CAMS) - {city}\n{frame_time.strftime("%d/%m/%Y %H:%M UTC")}')
-
             return [im, title]
         except Exception as e:
             print(f"Erro no frame {i}: {str(e)}")
             return [im, title]
 
     actual_frames = min(frames, 20)
-
     return fig, animate, actual_frames
 
 
@@ -600,11 +587,9 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     lat_idx = np.abs(ds.latitude.values - lat).argmin()
     lon_idx = np.abs(ds.longitude.values - lon).argmin()
 
-    times = []
+    times       = []
     pm25_values = []
     pm10_values = []
-
-    time_dims = [dim for dim in ds.dims if 'time' in dim or 'forecast' in dim]
 
     if 'forecast_reference_time' in ds.dims and 'forecast_period' in ds.dims:
         for t_idx, ref_time in enumerate(ds.forecast_reference_time.values):
@@ -617,6 +602,10 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                         forecast_reference_time=t_idx, forecast_period=p_idx,
                         latitude=lat_idx, longitude=lon_idx).values)
 
+                    # ── Ignora NaN na extração ─────────────────────────────
+                    if np.isnan(pm25_val) or np.isnan(pm10_val):
+                        continue
+
                     if pm25_val < 1e-6:
                         pm25_val *= 1e9; pm10_val *= 1e9
                     elif pm25_val < 1e-3:
@@ -628,14 +617,19 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                     times.append(actual_time)
                     pm25_values.append(pm25_val)
                     pm10_values.append(pm10_val)
-                except:
+                except Exception:
                     continue
+
     elif any(dim in ds.dims for dim in ['time', 'forecast_reference_time']):
         time_dim = next(dim for dim in ds.dims if dim in ['time', 'forecast_reference_time'])
         for t_idx in range(len(ds[time_dim])):
             try:
                 pm25_val = float(ds[pm25_var].isel({time_dim: t_idx, 'latitude': lat_idx, 'longitude': lon_idx}).values)
                 pm10_val = float(ds[pm10_var].isel({time_dim: t_idx, 'latitude': lat_idx, 'longitude': lon_idx}).values)
+
+                # ── Ignora NaN na extração ─────────────────────────────────
+                if np.isnan(pm25_val) or np.isnan(pm10_val):
+                    continue
 
                 if pm25_val < 1e-6:
                     pm25_val *= 1e9; pm10_val *= 1e9
@@ -647,21 +641,28 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                 times.append(pd.to_datetime(ds[time_dim].isel({time_dim: t_idx}).values))
                 pm25_values.append(pm25_val)
                 pm10_values.append(pm10_val)
-            except:
+            except Exception:
                 continue
 
     if times and pm25_values and pm10_values:
         df = pd.DataFrame({'time': times, 'pm25': pm25_values, 'pm10': pm10_values})
         df = df.sort_values('time').reset_index(drop=True)
 
+        # ── Interpola NaN residuais (máx 2 consecutivos) ──────────────────
+        df['pm25'] = pd.Series(df['pm25']).interpolate(method='linear', limit=2).fillna(method='bfill').fillna(method='ffill')
+        df['pm10'] = pd.Series(df['pm10']).interpolate(method='linear', limit=2).fillna(method='bfill').fillna(method='ffill')
+
+        # Remove linhas que ainda têm NaN após interpolação
+        df = df.dropna(subset=['pm25', 'pm10']).reset_index(drop=True)
+
         aqi_values = df.apply(lambda row: calculate_aqi(row['pm25'], row['pm10']), axis=1)
-        df['aqi'] = aqi_values.apply(lambda x: x[0])
+        df['aqi']          = aqi_values.apply(lambda x: x[0])
         df['aqi_category'] = aqi_values.apply(lambda x: x[1])
-        df['aqi_color'] = aqi_values.apply(lambda x: x[2])
+        df['aqi_color']    = aqi_values.apply(lambda x: x[2])
 
         return df
     else:
-        return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category'])
+        return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color'])
 
 
 def calculate_aqi(pm25, pm10):
@@ -682,37 +683,49 @@ def calculate_aqi(pm25, pm10):
 
     aqi = max(calc_sub_index(pm25, pm25_breakpoints), calc_sub_index(pm10, pm10_breakpoints))
 
-    if aqi <= 50:
-        return aqi, "Boa", "green"
-    elif aqi <= 100:
-        return aqi, "Moderada", "yellow"
-    elif aqi <= 150:
-        return aqi, "Insalubre para Grupos Sensíveis", "orange"
-    elif aqi <= 200:
-        return aqi, "Insalubre", "red"
-    elif aqi <= 300:
-        return aqi, "Muito Insalubre", "purple"
-    else:
-        return aqi, "Perigosa", "maroon"
+    if aqi <= 50:   return aqi, "Boa", "green"
+    elif aqi <= 100: return aqi, "Moderada", "yellow"
+    elif aqi <= 150: return aqi, "Insalubre para Grupos Sensíveis", "orange"
+    elif aqi <= 200: return aqi, "Insalubre", "red"
+    elif aqi <= 300: return aqi, "Muito Insalubre", "purple"
+    else:            return aqi, "Perigosa", "maroon"
 
 
 def predict_future_values(df, days=5, max_date=None):
+    """
+    Gera previsões por regressão linear.
+    CORREÇÃO: filtra NaN antes do fit para evitar 'Input y contains NaN'.
+    """
     if len(df) < 3:
-        return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'type'])
+        return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type'])
 
     df_hist = df.copy()
     df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
 
-    X = df_hist['time_numeric'].values.reshape(-1, 1)
+    # ── CORREÇÃO: remove NaN antes do fit ─────────────────────────────────────
+    mask_pm25 = ~np.isnan(df_hist['pm25'].values)
+    mask_pm10 = ~np.isnan(df_hist['pm10'].values)
+    mask_valid = mask_pm25 & mask_pm10
+
+    if mask_valid.sum() < 2:
+        # Dados insuficientes para regressão — retorna apenas histórico
+        df_hist['type'] = 'historical'
+        return df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
+
+    X_clean = df_hist.loc[mask_valid, 'time_numeric'].values.reshape(-1, 1)
+    y_pm25  = df_hist.loc[mask_valid, 'pm25'].values
+    y_pm10  = df_hist.loc[mask_valid, 'pm10'].values
+    # ──────────────────────────────────────────────────────────────────────────
 
     model_pm25 = LinearRegression()
-    model_pm25.fit(X, df_hist['pm25'].values)
+    model_pm25.fit(X_clean, y_pm25)
+
     model_pm10 = LinearRegression()
-    model_pm10.fit(X, df_hist['pm10'].values)
+    model_pm10.fit(X_clean, y_pm10)
 
     last_time = df_hist['time'].max()
-
     forecast_horizon = timedelta(days=days)
+
     future_times_candidates = [
         last_time + timedelta(hours=i * 6)
         for i in range(1, days * 4 + 1)
@@ -720,8 +733,7 @@ def predict_future_values(df, days=5, max_date=None):
     ]
 
     if max_date is not None:
-        max_dt = pd.Timestamp(max_date)
-        max_dt = max_dt.replace(hour=23, minute=59, second=59)
+        max_dt = pd.Timestamp(max_date).replace(hour=23, minute=59, second=59)
         future_times = [t for t in future_times_candidates if t <= max_dt]
     else:
         future_times = future_times_candidates
@@ -730,10 +742,12 @@ def predict_future_values(df, days=5, max_date=None):
         df_hist['type'] = 'historical'
         return df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
 
-    future_time_numeric = [(t - df_hist['time'].min()).total_seconds() for t in future_times]
+    future_time_numeric = np.array(
+        [(t - df_hist['time'].min()).total_seconds() for t in future_times]
+    ).reshape(-1, 1)
 
-    future_pm25 = np.maximum(model_pm25.predict(np.array(future_time_numeric).reshape(-1, 1)), 0)
-    future_pm10 = np.maximum(model_pm10.predict(np.array(future_time_numeric).reshape(-1, 1)), 0)
+    future_pm25 = np.maximum(model_pm25.predict(future_time_numeric), 0)
+    future_pm10 = np.maximum(model_pm10.predict(future_time_numeric), 0)
 
     future_aqi, future_categories, future_colors = [], [], []
     for pm25, pm10 in zip(future_pm25, future_pm10):
@@ -743,20 +757,27 @@ def predict_future_values(df, days=5, max_date=None):
         future_colors.append(color)
 
     df_pred = pd.DataFrame({
-        'time': future_times, 'pm25': future_pm25, 'pm10': future_pm10,
-        'aqi': future_aqi, 'aqi_category': future_categories, 'aqi_color': future_colors,
+        'time': future_times,
+        'pm25': future_pm25,
+        'pm10': future_pm10,
+        'aqi': future_aqi,
+        'aqi_category': future_categories,
+        'aqi_color': future_colors,
         'type': 'forecast'
     })
 
     df_hist['type'] = 'historical'
-    result = pd.concat([df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']], df_pred], ignore_index=True)
+    result = pd.concat(
+        [df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']], df_pred],
+        ignore_index=True
+    )
     return result
 
 
 def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
     cities_results = []
     progress_bar = st.progress(0)
-    status_text = st.empty()
+    status_text  = st.empty()
 
     for i, (city_name, coords) in enumerate(cities_dict.items()):
         progress_bar.progress((i + 1) / len(cities_dict))
@@ -766,17 +787,17 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
         df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)
 
         if not df_timeseries.empty:
-            df_forecast = predict_future_values(df_timeseries, days=5, max_date=end_date)
+            df_forecast  = predict_future_values(df_timeseries, days=5, max_date=end_date)
             forecast_only = df_forecast[df_forecast['type'] == 'forecast']
 
             if not forecast_only.empty:
                 max_day_idx = forecast_only['aqi'].idxmax()
                 cities_results.append({
-                    'cidade': city_name,
-                    'pm25_max': forecast_only['pm25'].max(),
-                    'pm10_max': forecast_only['pm10'].max(),
-                    'aqi_max': forecast_only['aqi'].max(),
-                    'data_max': forecast_only.loc[max_day_idx, 'time'],
+                    'cidade':    city_name,
+                    'pm25_max':  forecast_only['pm25'].max(),
+                    'pm10_max':  forecast_only['pm10'].max(),
+                    'aqi_max':   forecast_only['aqi'].max(),
+                    'data_max':  forecast_only.loc[max_day_idx, 'time'],
                     'categoria': forecast_only.loc[max_day_idx, 'aqi_category']
                 })
 
@@ -784,10 +805,14 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
     status_text.empty()
 
     if cities_results:
-        df_results = pd.DataFrame(cities_results).sort_values('aqi_max', ascending=False).reset_index(drop=True)
+        df_results = (
+            pd.DataFrame(cities_results)
+            .sort_values('aqi_max', ascending=False)
+            .reset_index(drop=True)
+        )
         df_results['pm25_max'] = df_results['pm25_max'].round(1)
         df_results['pm10_max'] = df_results['pm10_max'].round(1)
-        df_results['aqi_max'] = df_results['aqi_max'].round(0)
+        df_results['aqi_max']  = df_results['aqi_max'].round(0)
         df_results['data_max'] = df_results['data_max'].dt.strftime('%d/%m/%Y %H:%M')
         return df_results
     else:
@@ -802,15 +827,17 @@ def get_aqi_color(aqi_value):
     elif aqi_value <= 300: return '#8f3f97'
     else:                  return '#7e0023'
 
+
 def style_aqi_table(df):
     def apply_styles(row):
         aqi = row['IQA Máx']
-        bg_color = get_aqi_color(aqi)
+        bg_color   = get_aqi_color(aqi)
         text_color = 'white' if aqi > 100 else 'black'
         return [f'background-color: {bg_color}; color: {text_color}'] * len(row)
     return df.style.apply(apply_styles, axis=1)
 
 
+# ── Dicionário de municípios ───────────────────────────────────────────────────
 cities = {
     "Água Clara": [-20.4453, -52.8792], "Alcinópolis": [-18.3255, -53.7042],
     "Amambai": [-23.1058, -55.2253], "Anastácio": [-20.4823, -55.8104],
@@ -854,40 +881,52 @@ cities = {
     "Vicentina": [-22.4098, -54.4415]
 }
 
+
 def create_fallback_shapefile():
     from shapely.geometry import Polygon
     municipalities_data = []
     for city_name, (lat, lon) in cities.items():
         buffer_size = 0.15
         polygon = Polygon([
-            (lon - buffer_size, lat - buffer_size), (lon + buffer_size, lat - buffer_size),
-            (lon + buffer_size, lat + buffer_size), (lon - buffer_size, lat + buffer_size),
+            (lon - buffer_size, lat - buffer_size),
+            (lon + buffer_size, lat - buffer_size),
+            (lon + buffer_size, lat + buffer_size),
+            (lon - buffer_size, lat + buffer_size),
             (lon - buffer_size, lat - buffer_size)
         ])
         municipalities_data.append({'NM_MUN': city_name, 'geometry': polygon})
     return gpd.GeoDataFrame(municipalities_data, crs="EPSG:4326")
 
 
-# ── NOVO: função de relatório automático ───────────────────────────────────────
+# ── Keep-alive: ping no próprio app para não adormecer ────────────────────────
 def keep_alive():
     APP_URL = "https://lca-infi-ufms.streamlit.app/"
-
     try:
         response = requests.get(APP_URL, timeout=30)
-        print(f"[KEEPALIVE] Ping enviado: {response.status_code}")
+        print(f"[KEEPALIVE] {datetime.now().strftime('%H:%M:%S')} — status {response.status_code}")
     except Exception as e:
         print(f"[KEEPALIVE] Erro: {e}")
 
+
+# ── Relatório automático (roda em background pelo APScheduler) ────────────────
 def scheduled_report_campo_grande():
-    """Gera e envia o relatório de Campo Grande automaticamente (chamada pelo APScheduler)."""
-    cidade_auto  = "Campo Grande"
+    """
+    Busca sempre a previsão a partir do momento atual (horário mais recente).
+    Executa às 06h, 12h e 18h (horário de Campo Grande).
+    """
+    cidade_auto     = "Campo Grande"
     lat_auto, lon_auto = cities[cidade_auto]
-    start_auto   = datetime.today() - timedelta(days=1)
-    end_auto     = datetime.today() + timedelta(days=5)
-    dataset      = "cams-global-atmospheric-composition-forecasts"
+
+    # Início = agora (data e hora correntes, arredondado para baixo a 3h)
+    agora        = datetime.now()
+    hora_ref     = (agora.hour // 3) * 3          # horário CAMS mais recente
+    start_auto   = agora.replace(hour=hora_ref, minute=0, second=0, microsecond=0)
+    end_auto     = start_auto + timedelta(days=5)
+
+    dataset = "cams-global-atmospheric-composition-forecasts"
 
     log_entry = {
-        "inicio":  datetime.now().strftime("%d/%m/%Y %H:%M"),
+        "inicio":  agora.strftime("%d/%m/%Y %H:%M"),
         "status":  "em andamento",
         "detalhe": ""
     }
@@ -896,27 +935,24 @@ def scheduled_report_campo_grande():
         if len(_scheduler_log) > 10:
             _scheduler_log.pop()
 
-    filename    = None
-    gif_pm25    = None
-    gif_pm10    = None
-    ds          = None
+    filename = gif_pm25 = gif_pm10 = None
+    ds = None
 
     try:
-        hours_auto  = [f"{h:02d}:00" for h in range(0, 24, 3)]
-        city_bounds = {"north": -17.0, "south": -24.5, "east": -50.5, "west": -58.5}
-
         request = {
             "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
+            # data inicial = hoje; CAMS retornará a rodada mais recente disponível
             "date": f"{start_auto.strftime('%Y-%m-%d')}/{end_auto.strftime('%Y-%m-%d')}",
-            "time": hours_auto,
+            "time": [f"{h:02d}:00" for h in range(0, 24, 3)],
             "leadtime_hour": ["0", "24", "48", "72", "96", "120"],
             "type": ["forecast"],
             "format": "netcdf",
-            "area": [city_bounds["north"], city_bounds["west"],
-                     city_bounds["south"], city_bounds["east"]],
+            "area": [-17.0, -58.5, -24.5, -50.5],   # N, W, S, E
         }
 
-        filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.nc"
+        filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d_%H%M')}.nc"
+
+        # ── Precisa de 'client' no escopo global ──────────────────────────
         client.retrieve(dataset, request).download(filename)
 
         ds = xr.open_dataset(filename)
@@ -930,16 +966,15 @@ def scheduled_report_campo_grande():
         df_ts  = extract_pm_timeseries(ds, lat_auto, lon_auto, pm25_var, pm10_var)
         df_fct = predict_future_values(df_ts, days=5, max_date=end_auto)
 
-        # Normaliza unidades antes do ranking
-        if ds[pm25_var].max().values < 1e-6:
-            ds[pm25_var] = ds[pm25_var] * 1e9
-            ds[pm10_var] = ds[pm10_var] * 1e9
-        elif ds[pm25_var].max().values < 1e-3:
-            ds[pm25_var] = ds[pm25_var] * 1e6
-            ds[pm10_var] = ds[pm10_var] * 1e6
-        elif ds[pm25_var].max().values > 1000:
-            ds[pm25_var] = ds[pm25_var] / 1000
-            ds[pm10_var] = ds[pm10_var] / 1000
+        # Normaliza unidades no dataset para o ranking
+        for var in [pm25_var, pm10_var]:
+            max_val = float(ds[var].max().values)
+            if max_val < 1e-6:
+                ds[var] = ds[var] * 1e9
+            elif max_val < 1e-3:
+                ds[var] = ds[var] * 1e6
+            elif max_val > 1000:
+                ds[var] = ds[var] / 1000
 
         # Ranking estadual (sem st.progress — roda em background)
         top_df = pd.DataFrame(columns=["cidade", "pm25_max", "pm10_max", "aqi_max", "data_max", "categoria"])
@@ -974,29 +1009,25 @@ def scheduled_report_campo_grande():
         # Animações GIF
         ms_shapes_sched = load_ms_municipalities()
 
-        anim_result = create_pm_animation(
-            ds, pm25_var, cidade_auto, lat_auto, lon_auto,
-            ms_shapes_sched, start_auto, "PM2.5"
-        )
-        if anim_result:
-            from matplotlib import animation as _anim
-            fig25, anim25_fn, frames25 = anim_result
-            ani25   = _anim.FuncAnimation(fig25, anim25_fn, frames=frames25, interval=500, blit=True)
-            gif_pm25 = f"sched_PM25_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.gif"
-            ani25.save(gif_pm25, writer=_anim.PillowWriter(fps=2))
-            plt.close(fig25)
-
-        anim_result10 = create_pm_animation(
-            ds, pm10_var, cidade_auto, lat_auto, lon_auto,
-            ms_shapes_sched, start_auto, "PM10"
-        )
-        if anim_result10:
-            from matplotlib import animation as _anim
-            fig10, anim10_fn, frames10 = anim_result10
-            ani10    = _anim.FuncAnimation(fig10, anim10_fn, frames=frames10, interval=500, blit=True)
-            gif_pm10 = f"sched_PM10_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.gif"
-            ani10.save(gif_pm10, writer=_anim.PillowWriter(fps=2))
-            plt.close(fig10)
+        for pm_var, pm_type, gif_attr in [
+            (pm25_var, "PM2.5", "gif_pm25"),
+            (pm10_var, "PM10",  "gif_pm10")
+        ]:
+            anim_result = create_pm_animation(
+                ds, pm_var, cidade_auto, lat_auto, lon_auto,
+                ms_shapes_sched, start_auto, pm_type
+            )
+            if anim_result:
+                from matplotlib import animation as _anim
+                fig_, anim_fn, frames_ = anim_result
+                ani_ = _anim.FuncAnimation(fig_, anim_fn, frames=frames_, interval=500, blit=True)
+                gif_path = f"sched_{pm_type.replace('.','').replace(' ','')}_{cidade_auto}_{start_auto.strftime('%Y%m%d_%H%M')}.gif"
+                ani_.save(gif_path, writer=_anim.PillowWriter(fps=2))
+                plt.close(fig_)
+                if pm_type == "PM2.5":
+                    gif_pm25 = gif_path
+                else:
+                    gif_pm10 = gif_path
 
         ok = enviar_relatorio_email(
             cidade=cidade_auto,
@@ -1011,7 +1042,7 @@ def scheduled_report_campo_grande():
 
         pm25_max_str = f"{df_ts['pm25'].max():.1f} μg/m³" if not df_ts.empty else "N/D"
         log_entry["status"]  = "✅ concluído" if ok else "⚠️ gerado, sem e-mail"
-        log_entry["detalhe"] = f"PM2.5 máx: {pm25_max_str}"
+        log_entry["detalhe"] = f"Ref: {start_auto.strftime('%d/%m %H:%M')} | PM2.5 máx: {pm25_max_str}"
 
     except Exception as exc:
         log_entry["status"]  = "❌ erro"
@@ -1021,30 +1052,25 @@ def scheduled_report_campo_grande():
     finally:
         for f in [filename, gif_pm25, gif_pm10]:
             if f and os.path.exists(f):
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
+                try: os.remove(f)
+                except Exception: pass
         if ds is not None:
-            try:
-                ds.close()
-            except Exception:
-                pass
-# ──────────────────────────────────────────────────────────────────────────────
+            try: ds.close()
+            except Exception: pass
 
 
+# ── Configuração da página ─────────────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_icon="🌍")
 
 
-# ── NOVO: inicialização do scheduler (uma única vez por processo) ──────────────
+# ── Inicializa o scheduler UMA ÚNICA VEZ por processo ─────────────────────────
 if "scheduler_started" not in st.session_state:
-
     _sched = BackgroundScheduler(timezone="America/Campo_Grande")
 
-    # RELATÓRIO AUTOMÁTICO
+    # Relatório automático: 06h, 12h e 18h (Campo Grande)
     _sched.add_job(
         scheduled_report_campo_grande,
-        trigger=IntervalTrigger(hours=3),
+        trigger=CronTrigger(hour="6,12,18", minute=0, timezone="America/Campo_Grande"),
         id="relatorio_campo_grande",
         name="Relatório automático Campo Grande",
         replace_existing=True,
@@ -1052,7 +1078,7 @@ if "scheduler_started" not in st.session_state:
         misfire_grace_time=600,
     )
 
-    # AUTO PING
+    # Keep-alive: a cada 5 minutos
     _sched.add_job(
         keep_alive,
         trigger=IntervalTrigger(minutes=5),
@@ -1063,16 +1089,16 @@ if "scheduler_started" not in st.session_state:
     )
 
     _sched.start()
-
     st.session_state["scheduler_started"] = True
-    st.session_state["scheduler_obj"] = _sched
+    st.session_state["scheduler_obj"]     = _sched
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+# ── Credenciais CDS ───────────────────────────────────────────────────────────
 try:
     ads_url = st.secrets["ads"]["url"]
     ads_key = st.secrets["ads"]["key"]
-    client = cdsapi.Client(url=ads_url, key=ads_key)
+    client  = cdsapi.Client(url=ads_url, key=ads_key)
 except Exception as e:
     st.error("Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
     st.stop()
@@ -1081,28 +1107,28 @@ except Exception as e:
 @st.cache_data
 def load_ms_municipalities():
     try:
-        url = "https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_municipais/" + \
-              "municipio_2022/UFs/MS/MS_Municipios_2022.zip"
+        url = ("https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/"
+               "malhas_municipais/municipio_2022/UFs/MS/MS_Municipios_2022.zip")
         try:
             gdf = gpd.read_file(url)
-            if 'NM_MUN' not in gdf.columns and 'NM_MUNICIP' in gdf.columns:
-                gdf['NM_MUN'] = gdf['NM_MUNICIP']
-            elif 'NM_MUN' not in gdf.columns and 'NOME' in gdf.columns:
-                gdf['NM_MUN'] = gdf['NOME']
+            for col_candidato in ['NM_MUNICIP', 'NOME']:
+                if 'NM_MUN' not in gdf.columns and col_candidato in gdf.columns:
+                    gdf['NM_MUN'] = gdf[col_candidato]
             return gdf
         except Exception as e:
             st.warning(f"Erro ao carregar shapefile oficial do IBGE: {e}")
             return create_fallback_shapefile()
     except Exception as e:
-        st.warning(f"Não foi possível carregar os shapes dos municípios: {str(e)}")
+        st.warning(f"Não foi possível carregar os shapes dos municípios: {e}")
         return create_fallback_shapefile()
 
 
+# ── Interface principal ────────────────────────────────────────────────────────
 st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
 st.markdown("""
 ### Sistema Integrado de Monitoramento da Qualidade do Ar
 
-Este aplicativo apresenta as previsões de concentrações de Material Particulado (PM2.5 e PM10) 
+Este aplicativo apresenta as previsões de concentrações de Material Particulado (PM2.5 e PM10)
 para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 
 **Características desta versão:**
@@ -1111,7 +1137,7 @@ para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 - Animações temporais para PM2.5 e PM10
 - Índice de Qualidade do Ar (IQA) calculado
 - Previsões limitadas à data final selecionada
-- Relatório automático de Campo Grande enviado a cada 3 horas por e-mail
+- Relatório automático de Campo Grande enviado às **06h, 12h e 18h** por e-mail
 """)
 
 
@@ -1119,7 +1145,7 @@ def generate_pm_analysis():
     dataset = "cams-global-atmospheric-composition-forecasts"
 
     start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_str = end_date.strftime('%Y-%m-%d')
+    end_date_str   = end_date.strftime('%Y-%m-%d')
 
     hours = []
     current_hour = start_hour
@@ -1173,11 +1199,14 @@ def generate_pm_analysis():
             df_forecast = predict_future_values(df_timeseries, days=5, max_date=end_date)
 
         with st.spinner('Criando animação de PM2.5...'):
-            animation_result = create_pm_animation(ds, pm25_var, city, lat_center, lon_center, ms_shapes, start_date, "PM2.5")
+            animation_result = create_pm_animation(
+                ds, pm25_var, city, lat_center, lon_center, ms_shapes, start_date, "PM2.5"
+            )
             if animation_result is None:
                 return None
             fig_pm25, animate_pm25, frames_pm25 = animation_result
-            ani_pm25 = animation.FuncAnimation(fig_pm25, animate_pm25, frames=frames_pm25, interval=animation_speed, blit=True)
+            ani_pm25 = animation.FuncAnimation(fig_pm25, animate_pm25, frames=frames_pm25,
+                                               interval=animation_speed, blit=True)
             gif_filename_pm25 = f'PM25_{city}_{start_date}_to_{end_date}.gif'
             ani_pm25.save(gif_filename_pm25, writer=animation.PillowWriter(fps=2))
             plt.close(fig_pm25)
@@ -1185,28 +1214,35 @@ def generate_pm_analysis():
         gif_filename_pm10 = None
         if show_pm10_animation:
             with st.spinner('Criando animação de PM10...'):
-                animation_result_pm10 = create_pm_animation(ds, pm10_var, city, lat_center, lon_center, ms_shapes, start_date, "PM10")
+                animation_result_pm10 = create_pm_animation(
+                    ds, pm10_var, city, lat_center, lon_center, ms_shapes, start_date, "PM10"
+                )
                 if animation_result_pm10 is not None:
                     fig_pm10, animate_pm10, frames_pm10 = animation_result_pm10
-                    ani_pm10 = animation.FuncAnimation(fig_pm10, animate_pm10, frames=frames_pm10, interval=animation_speed, blit=True)
+                    ani_pm10 = animation.FuncAnimation(fig_pm10, animate_pm10, frames=frames_pm10,
+                                                       interval=animation_speed, blit=True)
                     gif_filename_pm10 = f'PM10_{city}_{start_date}_to_{end_date}.gif'
                     ani_pm10.save(gif_filename_pm10, writer=animation.PillowWriter(fps=2))
                     plt.close(fig_pm10)
 
         top_pollution_cities = None
         try:
-            if ds[pm25_var].max().values < 1e-6:
-                ds[pm25_var] = ds[pm25_var] * 1e9; ds[pm10_var] = ds[pm10_var] * 1e9
-            elif ds[pm25_var].max().values < 1e-3:
-                ds[pm25_var] = ds[pm25_var] * 1e6; ds[pm10_var] = ds[pm10_var] * 1e6
-            elif ds[pm25_var].max().values > 1000:
-                ds[pm25_var] = ds[pm25_var] / 1000; ds[pm10_var] = ds[pm10_var] / 1000
+            for var in [pm25_var, pm10_var]:
+                max_val = float(ds[var].max().values)
+                if max_val < 1e-6:
+                    ds[var] = ds[var] * 1e9
+                elif max_val < 1e-3:
+                    ds[var] = ds[var] * 1e6
+                elif max_val > 1000:
+                    ds[var] = ds[var] / 1000
 
             with st.spinner("Analisando qualidade do ar em todos os municípios de MS..."):
                 top_pollution_cities = analyze_all_cities(ds, pm25_var, pm10_var, cities, end_date=end_date)
         except Exception as e:
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
-            top_pollution_cities = pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
+            top_pollution_cities = pd.DataFrame(
+                columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria']
+            )
 
         try:
             enviar_relatorio_email(
@@ -1223,14 +1259,14 @@ def generate_pm_analysis():
             pass
 
         return {
-            'animation_pm25': gif_filename_pm25,
-            'animation_pm10': gif_filename_pm10,
-            'timeseries': df_timeseries,
-            'forecast': df_forecast,
-            'dataset': ds,
-            'pm25_var': pm25_var,
-            'pm10_var': pm10_var,
-            'top_pollution': top_pollution_cities
+            'animation_pm25':  gif_filename_pm25,
+            'animation_pm10':  gif_filename_pm10,
+            'timeseries':      df_timeseries,
+            'forecast':        df_forecast,
+            'dataset':         ds,
+            'pm25_var':        pm25_var,
+            'pm10_var':        pm10_var,
+            'top_pollution':   top_pollution_cities
         }
 
     except Exception as e:
@@ -1240,15 +1276,15 @@ def generate_pm_analysis():
         return None
     finally:
         if os.path.exists(filename):
-            try:
-                os.remove(filename)
-            except:
-                pass
+            try: os.remove(filename)
+            except Exception: pass
 
 
+# ── Carregamento dos shapes ────────────────────────────────────────────────────
 with st.spinner("Carregando shapes dos municípios..."):
     ms_shapes = load_ms_municipalities()
 
+# ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header("Configurações")
 
 available_cities = sorted(list(set(ms_shapes['NM_MUN'].tolist()).intersection(set(cities.keys()))))
@@ -1256,26 +1292,31 @@ if not available_cities:
     available_cities = list(cities.keys())
 
 default_city_index = available_cities.index("Campo Grande") if "Campo Grande" in available_cities else 0
-city = st.sidebar.selectbox("Selecione o município para análise detalhada", available_cities, index=default_city_index)
+city = st.sidebar.selectbox("Selecione o município para análise detalhada",
+                             available_cities, index=default_city_index)
 lat_center, lon_center = cities[city]
 
 st.sidebar.subheader("Período de Análise")
 start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
-end_date = st.sidebar.date_input("Data Final", datetime.today() + timedelta(days=5))
+end_date   = st.sidebar.date_input("Data Final",     datetime.today() + timedelta(days=5))
 
-all_hours = list(range(0, 24, 3))
-start_hour = st.sidebar.selectbox("Horário Inicial", all_hours, format_func=lambda x: f"{x:02d}:00")
-end_hour = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours)-1, format_func=lambda x: f"{x:02d}:00")
+all_hours  = list(range(0, 24, 3))
+start_hour = st.sidebar.selectbox("Horário Inicial", all_hours,
+                                   format_func=lambda x: f"{x:02d}:00")
+end_hour   = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours) - 1,
+                                   format_func=lambda x: f"{x:02d}:00")
 
 st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
-    animation_speed = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
-    show_pm10_animation = st.checkbox("Gerar animação também para PM10", value=True)
+    animation_speed       = st.slider("Velocidade da Animação (ms)", 200, 1000, 500)
+    show_pm10_animation   = st.checkbox("Gerar animação também para PM10", value=True)
 
-st.sidebar.info("Previsões CAMS\nEste sistema utiliza previsões de PM2.5 e PM10 do modelo CAMS, com contornos municipais destacados.")
+st.sidebar.info(
+    "Previsões CAMS\nEste sistema utiliza previsões de PM2.5 e PM10 do modelo CAMS, "
+    "com contornos municipais destacados."
+)
 
-
-# ── NOVO: painel de status do scheduler na sidebar ─────────────────────────────
+# ── Painel do scheduler na sidebar ────────────────────────────────────────────
 st.sidebar.markdown("---")
 st.sidebar.subheader("🕐 Relatório Automático")
 
@@ -1284,13 +1325,12 @@ if "scheduler_obj" in st.session_state:
     _job = _sched_ref.get_job("relatorio_campo_grande")
     if _job and _job.next_run_time:
         st.sidebar.info(
-            f"**Campo Grande — a cada 3h**\n\n"
+            f"**Campo Grande — 06h / 12h / 18h**\n\n"
             f"Próxima execução:\n"
             f"{_job.next_run_time.strftime('%d/%m/%Y %H:%M')}"
         )
 
-    _col_run, _col_skip = st.sidebar.columns(2)
-    if _col_run.button("▶ Rodar agora", use_container_width=True):
+    if st.sidebar.button("▶ Rodar agora", use_container_width=True):
         threading.Thread(target=scheduled_report_campo_grande, daemon=True).start()
         st.sidebar.success("Iniciado em background!")
 
@@ -1306,11 +1346,13 @@ if "scheduler_obj" in st.session_state:
             )
 else:
     st.sidebar.warning("Scheduler não inicializado.")
-# ──────────────────────────────────────────────────────────────────────────────
 
-
+# ── Botão principal ────────────────────────────────────────────────────────────
 st.markdown("### Iniciar Análise Completa")
-st.markdown(f"Clique no botão abaixo para gerar análise de PM2.5 e PM10 centralizada em **{city}** com contornos municipais.")
+st.markdown(
+    f"Clique no botão abaixo para gerar análise de PM2.5 e PM10 "
+    f"centralizada em **{city}** com contornos municipais."
+)
 
 if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_width=True):
     try:
@@ -1325,11 +1367,10 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
 
             with tab3:
                 st.subheader(f"Animações Temporais - {city}")
-
                 st.markdown("### Evolução Temporal - PM2.5 (Previsto CAMS)")
                 if os.path.exists(results['animation_pm25']):
                     st.image(results['animation_pm25'],
-                             caption=f"Previsão temporal do PM2.5 em {city} com contornos municipais destacados ({start_date} a {end_date})")
+                             caption=f"Previsão temporal do PM2.5 em {city} ({start_date} a {end_date})")
                     with open(results['animation_pm25'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM2.5 (GIF)",
@@ -1341,7 +1382,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                 if results['animation_pm10'] and os.path.exists(results['animation_pm10']):
                     st.markdown("### Evolução Temporal - PM10 (Previsto CAMS)")
                     st.image(results['animation_pm10'],
-                             caption=f"Previsão temporal do PM10 em {city} com contornos municipais destacados ({start_date} a {end_date})")
+                             caption=f"Previsão temporal do PM10 em {city} ({start_date} a {end_date})")
                     with open(results['animation_pm10'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM10 (GIF)",
@@ -1358,40 +1399,29 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                 - Contorno vermelho espesso: Limites do município de {city}
                 - Linhas pretas finas: Contornos de todos os municípios de MS
                 - Branco: concentração abaixo de 1 μg/m³ (limiar mínimo)
-                - Cores: Intensidade das previsões de material particulado (CAMS)
 
-                **Escala de Cores PM2.5 (Amarelo-Laranja-Vermelho):**
-                - Branco: < 1 μg/m³ (abaixo do limiar)
-                - Amarelo claro: 1–12 μg/m³ (Boa qualidade)
-                - Amarelo/Laranja: 12–25 μg/m³ (Moderada)
-                - Laranja: 25–35 μg/m³ (Limite OMS excedido)
-                - Vermelho: > 35 μg/m³ (Insalubre)
+                **Escala PM2.5 (Amarelo → Laranja → Vermelho):**
+                - Amarelo claro: 1–12 μg/m³ · Laranja: 25–35 μg/m³ · Vermelho: > 35 μg/m³
 
-                **Escala de Cores PM10 (Tons de Laranja):**
-                - Branco: < 1 μg/m³ (abaixo do limiar)
-                - Laranja claro: 1–25 μg/m³ (Boa qualidade)
-                - Laranja médio: 25–50 μg/m³ (Moderada)
-                - Laranja escuro: 50–150 μg/m³ (Limite OMS excedido)
-                - Marrom: > 150 μg/m³ (Insalubre)
+                **Escala PM10 (Tons de Laranja):**
+                - Laranja claro: 1–25 μg/m³ · Laranja escuro: 50–150 μg/m³ · Marrom: > 150 μg/m³
                 """)
 
             with tab1:
                 st.subheader(f"Análise Detalhada - {city}")
-
                 col1, col2 = st.columns([3, 2])
 
                 with col1:
                     df_combined = results['forecast']
+                    hist_data   = df_combined[df_combined['type'] == 'historical']
 
                     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-
-                    hist_data = df_combined[df_combined['type'] == 'historical']
 
                     if not hist_data.empty:
                         ax1.plot(hist_data['time'], hist_data['pm25'], 'o-', color='darkblue',
                                  label='PM2.5 Previsto (CAMS)', markersize=6)
                     ax1.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (25 μg/m³)')
-                    ax1.axhline(y=35, color='red', linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
+                    ax1.axhline(y=35, color='red',    linestyle='--', alpha=0.7, label='Limite EPA (35 μg/m³)')
                     ax1.set_ylabel('PM2.5 (μg/m³)', fontsize=12)
                     ax1.legend(); ax1.grid(True, alpha=0.3)
                     ax1.set_title('Material Particulado PM2.5 — Previsto CAMS', fontsize=14)
@@ -1399,8 +1429,8 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     if not hist_data.empty:
                         ax2.plot(hist_data['time'], hist_data['pm10'], 'o-', color='brown',
                                  label='PM10 Previsto (CAMS)', markersize=6)
-                    ax2.axhline(y=50, color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
-                    ax2.axhline(y=150, color='red', linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
+                    ax2.axhline(y=50,  color='orange', linestyle='--', alpha=0.7, label='Limite OMS (50 μg/m³)')
+                    ax2.axhline(y=150, color='red',    linestyle='--', alpha=0.7, label='Limite EPA (150 μg/m³)')
                     ax2.set_ylabel('PM10 (μg/m³)', fontsize=12)
                     ax2.legend(); ax2.grid(True, alpha=0.3)
                     ax2.set_title('Material Particulado PM10 — Previsto CAMS', fontsize=14)
@@ -1408,10 +1438,10 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     if not hist_data.empty:
                         ax3.plot(hist_data['time'], hist_data['aqi'], 'o-', color='purple',
                                  label='IQA Previsto (CAMS)', markersize=6)
-                    ax3.axhspan(0, 50, alpha=0.2, color='green', label='Boa')
-                    ax3.axhspan(51, 100, alpha=0.2, color='yellow', label='Moderada')
+                    ax3.axhspan(0,   50,  alpha=0.2, color='green',  label='Boa')
+                    ax3.axhspan(51,  100, alpha=0.2, color='yellow', label='Moderada')
                     ax3.axhspan(101, 150, alpha=0.2, color='orange', label='Insalubre p/ Sensíveis')
-                    ax3.axhspan(151, 200, alpha=0.2, color='red', label='Insalubre')
+                    ax3.axhspan(151, 200, alpha=0.2, color='red',    label='Insalubre')
                     ax3.set_ylabel('IQA', fontsize=12)
                     ax3.set_xlabel('Data/Hora', fontsize=12)
                     ax3.legend(); ax3.grid(True, alpha=0.3)
@@ -1423,26 +1453,24 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
 
                 with col2:
                     st.subheader("Estatísticas das Previsões")
-
                     if not hist_data.empty:
-                        curr_pm25 = hist_data['pm25'].iloc[-1]
-                        curr_pm10 = hist_data['pm10'].iloc[-1]
-                        curr_aqi = hist_data['aqi'].iloc[-1]
+                        curr_pm25     = hist_data['pm25'].iloc[-1]
+                        curr_pm10     = hist_data['pm10'].iloc[-1]
+                        curr_aqi      = hist_data['aqi'].iloc[-1]
                         curr_category = hist_data['aqi_category'].iloc[-1]
-                        curr_color = hist_data['aqi_color'].iloc[-1]
+                        curr_color    = hist_data['aqi_color'].iloc[-1]
 
                         col_a, col_b = st.columns(2)
                         col_a.metric("PM2.5 Previsto", f"{curr_pm25:.1f} μg/m³")
-                        col_b.metric("PM10 Previsto", f"{curr_pm10:.1f} μg/m³")
+                        col_b.metric("PM10 Previsto",  f"{curr_pm10:.1f} μg/m³")
                         st.metric("IQA", f"{curr_aqi:.0f}")
 
                         st.markdown(f"""
-                        <div style="padding:15px; border-radius:10px; background-color:{curr_color}; 
-                        color:white; text-align:center; margin:10px 0;">
+                        <div style="padding:15px;border-radius:10px;background-color:{curr_color};
+                        color:white;text-align:center;margin:10px 0;">
                         <h3 style="margin:0;">Qualidade do Ar</h3>
                         <h2 style="margin:5px 0;">{curr_category}</h2>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        </div>""", unsafe_allow_html=True)
 
                         st.subheader("Recomendações")
                         if curr_aqi <= 50:
@@ -1475,27 +1503,25 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                 st.subheader("Alerta de Qualidade do Ar - Mato Grosso do Sul")
 
                 if 'top_pollution' in results and not results['top_pollution'].empty:
-                    top_cities = results['top_pollution'].head(20)
-
+                    top_cities    = results['top_pollution'].head(20)
                     critical_cities = top_cities[top_cities['aqi_max'] > 100]
-                    very_critical = top_cities[top_cities['aqi_max'] > 150]
+                    very_critical   = top_cities[top_cities['aqi_max'] > 150]
 
                     col1, col2, col3 = st.columns(3)
-                    col1.metric("Cidades em Alerta", len(critical_cities))
-                    col2.metric("Condição Insalubre", len(very_critical))
-                    col3.metric("IQA Máximo Previsto", f"{top_cities['aqi_max'].max():.0f}")
+                    col1.metric("Cidades em Alerta",    len(critical_cities))
+                    col2.metric("Condição Insalubre",   len(very_critical))
+                    col3.metric("IQA Máximo Previsto",  f"{top_cities['aqi_max'].max():.0f}")
 
                     if len(critical_cities) > 0 and len(top_cities) >= 3:
                         st.error(f"""
                         ### ALERTA DE QUALIDADE DO AR
-
-                        **{len(critical_cities)} municípios** com previsão de qualidade do ar 
+                        **{len(critical_cities)} municípios** com previsão de qualidade do ar
                         inadequada até {end_date.strftime('%d/%m/%Y')}!
 
                         Municípios mais críticos:
-                        1. **{top_cities.iloc[0]['cidade']}**: IQA {top_cities.iloc[0]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[0]['pm25_max']:.1f} μg/m³
-                        2. **{top_cities.iloc[1]['cidade']}**: IQA {top_cities.iloc[1]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[1]['pm25_max']:.1f} μg/m³
-                        3. **{top_cities.iloc[2]['cidade']}**: IQA {top_cities.iloc[2]['aqi_max']:.0f} - PM2.5: {top_cities.iloc[2]['pm25_max']:.1f} μg/m³
+                        1. **{top_cities.iloc[0]['cidade']}**: IQA {top_cities.iloc[0]['aqi_max']:.0f} — PM2.5: {top_cities.iloc[0]['pm25_max']:.1f} μg/m³
+                        2. **{top_cities.iloc[1]['cidade']}**: IQA {top_cities.iloc[1]['aqi_max']:.0f} — PM2.5: {top_cities.iloc[1]['pm25_max']:.1f} μg/m³
+                        3. **{top_cities.iloc[2]['cidade']}**: IQA {top_cities.iloc[2]['aqi_max']:.0f} — PM2.5: {top_cities.iloc[2]['pm25_max']:.1f} μg/m³
                         """)
 
                     st.markdown("### Ranking de Qualidade do Ar por Município (Previsões CAMS)")
@@ -1507,25 +1533,34 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     st.dataframe(style_aqi_table(top_cities_display), use_container_width=True)
 
                     st.subheader("Material Particulado Previsto — 10 Municípios Mais Críticos")
-                    fig, ax = plt.subplots(1, 1, figsize=(14, 8))
-                    top10 = top_cities.head(10)
-                    x_pos = np.arange(len(top10))
-                    width = 0.35
+                    fig, ax = plt.subplots(figsize=(14, 8))
+                    top10   = top_cities.head(10)
+                    x_pos   = np.arange(len(top10))
+                    width   = 0.35
 
-                    bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width, color='darkblue', alpha=0.8, label='PM2.5 Previsto')
-                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width, color='brown', alpha=0.8, label='PM10 Previsto')
+                    bars1 = ax.bar(x_pos - width/2, top10['pm25_max'], width,
+                                   color='darkblue', alpha=0.8, label='PM2.5 Previsto')
+                    bars2 = ax.bar(x_pos + width/2, top10['pm10_max'], width,
+                                   color='brown',    alpha=0.8, label='PM10 Previsto')
                     ax.set_xticks(x_pos)
                     ax.set_xticklabels(top10['cidade'], rotation=45, ha='right')
                     ax.set_ylabel('Concentração (μg/m³)', fontsize=12)
-                    ax.set_title('PM2.5 e PM10 Máximos Previstos até ' + end_date.strftime('%d/%m/%Y') + ' (CAMS)', fontsize=14)
-                    ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7, label='Limite PM2.5 OMS (25 μg/m³)')
-                    ax.axhline(y=50, color='red', linestyle='--', alpha=0.7, label='Limite PM10 OMS (50 μg/m³)')
+                    ax.set_title(
+                        'PM2.5 e PM10 Máximos Previstos até '
+                        + end_date.strftime('%d/%m/%Y') + ' (CAMS)', fontsize=14
+                    )
+                    ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7,
+                               label='Limite PM2.5 OMS (25 μg/m³)')
+                    ax.axhline(y=50, color='red',    linestyle='--', alpha=0.7,
+                               label='Limite PM10 OMS (50 μg/m³)')
                     ax.legend(); ax.grid(True, alpha=0.3)
 
                     for bar, val in zip(bars1, top10['pm25_max']):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.0f}', ha='center', va='bottom', fontsize=9)
+                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
                     for bar, val in zip(bars2, top10['pm10_max']):
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, f'{val:.0f}', ha='center', va='bottom', fontsize=9)
+                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1,
+                                f'{val:.0f}', ha='center', va='bottom', fontsize=9)
 
                     plt.tight_layout()
                     st.pyplot(fig)
@@ -1546,22 +1581,21 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
         st.code(traceback.format_exc())
 
 
+# ── Rodapé ─────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown("""
 ### Informações Importantes
 
 **Sobre os Dados:**
-- As previsões de PM2.5/PM10 são geradas pelo modelo CAMS (Copernicus Atmosphere Monitoring Service)
-- Dados validados continuamente com estações de monitoramento globais
+- Previsões de PM2.5/PM10 geradas pelo modelo CAMS (Copernicus Atmosphere Monitoring Service)
 - Resolução espacial: ~0.4° × 0.4° (aprox. 44 km) · Resolução temporal: 3 horas
 
 **Novidades desta versão:**
 - Contornos municipais destacados nas animações
 - Município selecionado evidenciado em vermelho
-- Animações separadas para PM2.5 e PM10
-- Previsões limitadas à data final escolhida pelo usuário
-- Regiões com concentração < 1 μg/m³ exibidas em branco nos mapas
-- Relatório automático de Campo Grande gerado e enviado por e-mail a cada 3 horas
+- Relatório automático de Campo Grande às **06h, 12h e 18h** (horário de Campo Grande)
+- Previsão sempre a partir do momento mais recente disponível no CAMS
+- Regiões com concentração < 1 μg/m³ exibidas em branco
 
 **Dados Fornecidos por:**
 - CAMS (Copernicus Atmosphere Monitoring Service) — União Europeia
@@ -1574,21 +1608,14 @@ with st.expander("Suporte e Informações Técnicas"):
     ### Suporte Técnico
 
     **Parâmetros do Sistema:**
-    - Resolução espacial: ~0.4° x 0.4° (aprox. 44 km)
+    - Resolução espacial: ~0.4° × 0.4° (≈ 44 km)
     - Resolução temporal: 3 horas
-    - Previsão: Até a data final selecionada pelo usuário
-    - Variáveis principais: PM2.5 e PM10 (previsões CAMS)
-    - Contornos: Municípios de MS com destaque do selecionado
-    - Relatório automático: Campo Grande, a cada 3 horas, enviado por e-mail
+    - Horizonte de previsão: até 120 h (5 dias)
+    - Relatório automático: Campo Grande às 06h, 12h e 18h (America/Campo_Grande)
+    - Keep-alive: ping a cada 5 minutos para manter a página ativa
 
     **Vantagens das Previsões CAMS:**
     - Calibração contínua com estações de superfície globais
     - Validação internacional rigorosa
     - Cobertura espacial completa para toda a região
-
-    **Para Melhor Precisão:**
-    - Use dados de múltiplos pontos temporais
-    - Considere condições meteorológicas locais
-    - Valide com medições locais quando disponível
-    - Monitore tendências de longo prazo
     """)

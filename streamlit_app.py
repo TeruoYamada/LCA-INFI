@@ -161,7 +161,7 @@ def enviar_relatorio_email(
           <tbody>{rows_hist}{rows_prev}</tbody>
         </table>
         <p style='font-size:11px;color:#999;margin-top:4px;'>
-          * Dados CAMS: previsões até {end_date.strftime('%d/%m/%Y')}
+          * Dados CAMS: previsões até {end_date.strftime('%d/%m/%Y') if hasattr(end_date, 'strftime') else str(end_date)}
         </p>"""
 
         tabela_estadual = ""
@@ -218,8 +218,11 @@ def enviar_relatorio_email(
             card("IQA Prev. Máx",       f"{prev_aqi:.0f}",  "",       cor_h)
         )
 
+        end_date_str = end_date.strftime('%d/%m/%Y') if hasattr(end_date, 'strftime') else str(end_date)
+        start_date_str = start_date.strftime('%d/%m/%Y') if hasattr(start_date, 'strftime') else str(start_date)
+
         assunto = (f"📋 Relatório Qualidade do Ar — {cidade} | "
-                   f"{start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}")
+                   f"{start_date_str} → {end_date_str}")
 
         alerta_header = ""
         if aqi_max_periodo > 100:
@@ -227,7 +230,7 @@ def enviar_relatorio_email(
             <div style='background:#fff3cd;border-left:5px solid #ff9800;padding:14px 18px;
                         border-radius:6px;margin-bottom:20px;'>
               <strong>🚨 ATENÇÃO:</strong> IQA previsto máximo de <strong>{aqi_max_periodo:.0f}</strong>
-              em <strong>{cidade}</strong> até {end_date.strftime('%d/%m/%Y')} —
+              em <strong>{cidade}</strong> até {end_date_str} —
               categoria <strong>{prev_cat}</strong>.<br>
               {rec_prev}
             </div>"""
@@ -257,7 +260,7 @@ def enviar_relatorio_email(
                 <tr>
                   <td style='font-size:14px;color:#555;'>
                     <strong>Município:</strong> {cidade}<br>
-                    <strong>Período:</strong> {start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}<br>
+                    <strong>Período:</strong> {start_date_str} → {end_date_str}<br>
                     <strong>Referência temporal:</strong> {curr_time}
                   </td>
                   <td style='text-align:right;'>
@@ -409,7 +412,7 @@ def enviar_relatorio_email(
               <div style='background:#ffebee;border-left:5px solid #c62828;padding:14px 18px;
                           border-radius:6px;margin-top:20px;font-size:13px;'>
                 <strong>⚠️ Alerta Estadual:</strong> {n_alerta} município(s) com IQA previsto acima de 100
-                até {end_date.strftime('%d/%m/%Y')} em Mato Grosso do Sul.
+                até {end_date_str} em Mato Grosso do Sul.
               </div>"""}
 
               <p style='color:#bbb;font-size:11px;margin-top:32px;border-top:1px solid #eee;
@@ -440,7 +443,7 @@ def enviar_relatorio_email(
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
                     part.add_header("Content-Disposition", "attachment",
-                                    filename=f"Animacao_{label}_{cidade}_{start_date.strftime('%Y%m%d')}.gif")
+                                    filename=f"Animacao_{label}_{cidade}_{start_date.strftime('%Y%m%d') if hasattr(start_date,'strftime') else str(start_date)}.gif")
                     msg.attach(part)
 
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
@@ -602,7 +605,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                         forecast_reference_time=t_idx, forecast_period=p_idx,
                         latitude=lat_idx, longitude=lon_idx).values)
 
-                    # ── Ignora NaN na extração ─────────────────────────────
                     if np.isnan(pm25_val) or np.isnan(pm10_val):
                         continue
 
@@ -627,7 +629,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
                 pm25_val = float(ds[pm25_var].isel({time_dim: t_idx, 'latitude': lat_idx, 'longitude': lon_idx}).values)
                 pm10_val = float(ds[pm10_var].isel({time_dim: t_idx, 'latitude': lat_idx, 'longitude': lon_idx}).values)
 
-                # ── Ignora NaN na extração ─────────────────────────────────
                 if np.isnan(pm25_val) or np.isnan(pm10_val):
                     continue
 
@@ -648,13 +649,9 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
         df = pd.DataFrame({'time': times, 'pm25': pm25_values, 'pm10': pm10_values})
         df = df.sort_values('time').reset_index(drop=True)
 
-        # ── CORREÇÃO: substituído fillna(method=...) por .bfill().ffill() ──
-        # Compatível com pandas >= 2.2 que removeu o argumento 'method' do fillna()
         df['pm25'] = pd.Series(df['pm25']).interpolate(method='linear', limit=2).bfill().ffill()
         df['pm10'] = pd.Series(df['pm10']).interpolate(method='linear', limit=2).bfill().ffill()
-        # ────────────────────────────────────────────────────────────────────
 
-        # Remove linhas que ainda têm NaN após interpolação
         df = df.dropna(subset=['pm25', 'pm10']).reset_index(drop=True)
 
         aqi_values = df.apply(lambda row: calculate_aqi(row['pm25'], row['pm10']), axis=1)
@@ -693,10 +690,16 @@ def calculate_aqi(pm25, pm10):
     else:            return aqi, "Perigosa", "maroon"
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CORREÇÃO PRINCIPAL: predict_future_values
+# Problema original: max_date chegava como datetime.date (do st.date_input),
+# mas o código chamava .replace(hour=23, ...) que só existe em datetime.datetime,
+# fazendo max_dt ficar incorreto e o filtro de datas falhar silenciosamente.
+# ══════════════════════════════════════════════════════════════════════════════
 def predict_future_values(df, days=5, max_date=None):
     """
-    Gera previsões por regressão linear.
-    CORREÇÃO: filtra NaN antes do fit para evitar 'Input y contains NaN'.
+    Gera previsões por regressão linear respeitando estritamente max_date.
+    Aceita max_date como datetime.date, datetime.datetime ou pd.Timestamp.
     """
     if len(df) < 3:
         return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type'])
@@ -704,10 +707,7 @@ def predict_future_values(df, days=5, max_date=None):
     df_hist = df.copy()
     df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
 
-    # ── Remove NaN antes do fit ────────────────────────────────────────────────
-    mask_pm25 = ~np.isnan(df_hist['pm25'].values)
-    mask_pm10 = ~np.isnan(df_hist['pm10'].values)
-    mask_valid = mask_pm25 & mask_pm10
+    mask_valid = ~np.isnan(df_hist['pm25'].values) & ~np.isnan(df_hist['pm10'].values)
 
     if mask_valid.sum() < 2:
         df_hist['type'] = 'historical'
@@ -716,7 +716,6 @@ def predict_future_values(df, days=5, max_date=None):
     X_clean = df_hist.loc[mask_valid, 'time_numeric'].values.reshape(-1, 1)
     y_pm25  = df_hist.loc[mask_valid, 'pm25'].values
     y_pm10  = df_hist.loc[mask_valid, 'pm10'].values
-    # ──────────────────────────────────────────────────────────────────────────
 
     model_pm25 = LinearRegression()
     model_pm25.fit(X_clean, y_pm25)
@@ -725,19 +724,30 @@ def predict_future_values(df, days=5, max_date=None):
     model_pm10.fit(X_clean, y_pm10)
 
     last_time = df_hist['time'].max()
-    forecast_horizon = timedelta(days=days)
 
-    future_times_candidates = [
+    # ── CORREÇÃO: converte max_date para pd.Timestamp independentemente do tipo ──
+    if max_date is not None:
+        if isinstance(max_date, pd.Timestamp):
+            # Já é Timestamp — apenas fixa horário no fim do dia
+            max_dt = max_date.replace(hour=23, minute=59, second=59)
+        elif isinstance(max_date, datetime):
+            # datetime.datetime — converte direto
+            max_dt = pd.Timestamp(max_date).replace(hour=23, minute=59, second=59)
+        else:
+            # datetime.date (vindo do st.date_input) — constrói datetime explicitamente
+            max_dt = pd.Timestamp(
+                datetime(max_date.year, max_date.month, max_date.day, 23, 59, 59)
+            )
+    else:
+        max_dt = None
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # Gera candidatos e filtra pelo limite máximo em uma única compreensão
+    future_times = [
         last_time + timedelta(hours=i * 6)
         for i in range(1, days * 4 + 1)
-        if timedelta(hours=i * 6) <= forecast_horizon
+        if (max_dt is None or last_time + timedelta(hours=i * 6) <= max_dt)
     ]
-
-    if max_date is not None:
-        max_dt = pd.Timestamp(max_date).replace(hour=23, minute=59, second=59)
-        future_times = [t for t in future_times_candidates if t <= max_dt]
-    else:
-        future_times = future_times_candidates
 
     if not future_times:
         df_hist['type'] = 'historical'
@@ -758,13 +768,13 @@ def predict_future_values(df, days=5, max_date=None):
         future_colors.append(color)
 
     df_pred = pd.DataFrame({
-        'time': future_times,
-        'pm25': future_pm25,
-        'pm10': future_pm10,
-        'aqi': future_aqi,
+        'time':         future_times,
+        'pm25':         future_pm25,
+        'pm10':         future_pm10,
+        'aqi':          future_aqi,
         'aqi_category': future_categories,
-        'aqi_color': future_colors,
-        'type': 'forecast'
+        'aqi_color':    future_colors,
+        'type':         'forecast'
     })
 
     df_hist['type'] = 'historical'
@@ -773,6 +783,7 @@ def predict_future_values(df, days=5, max_date=None):
         ignore_index=True
     )
     return result
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
@@ -909,19 +920,25 @@ def keep_alive():
         print(f"[KEEPALIVE] Erro: {e}")
 
 
-# ── Relatório automático (roda em background pelo APScheduler) ────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# CORREÇÃO: scheduled_report_campo_grande
+# end_auto agora termina às 23:59:59 do último dia (não às HH:00 do executor),
+# evitando que candidatos de 00h do dia seguinte passem pelo filtro.
+# ══════════════════════════════════════════════════════════════════════════════
 def scheduled_report_campo_grande():
     """
     Busca sempre a previsão a partir do momento atual (horário mais recente).
     Executa às 06h, 12h e 18h (horário de Campo Grande).
     """
-    cidade_auto     = "Campo Grande"
+    cidade_auto        = "Campo Grande"
     lat_auto, lon_auto = cities[cidade_auto]
 
-    agora        = datetime.now()
-    hora_ref     = (agora.hour // 3) * 3
-    start_auto   = agora.replace(hour=hora_ref, minute=0, second=0, microsecond=0)
-    end_auto     = start_auto + timedelta(days=5)
+    agora    = datetime.now()
+    hora_ref = (agora.hour // 3) * 3
+    start_auto = agora.replace(hour=hora_ref, minute=0, second=0, microsecond=0)
+
+    # CORREÇÃO: fixa o fim exatamente em 23:59:59 do último dia do período
+    end_auto = (start_auto + timedelta(days=5)).replace(hour=23, minute=59, second=59)
 
     dataset = "cams-global-atmospheric-composition-forecasts"
 
@@ -1052,6 +1069,7 @@ def scheduled_report_campo_grande():
         if ds is not None:
             try: ds.close()
             except Exception: pass
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 # ── Configuração da página ─────────────────────────────────────────────────────

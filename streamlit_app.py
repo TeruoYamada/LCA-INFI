@@ -812,19 +812,63 @@ def keep_alive():
 def build_cams_request(start_date_obj):
     """
     Constrói o dicionário de requisição para a API CAMS ADS v1.
-    CORREÇÕES aplicadas:
-      - 'data_format': 'netcdf4'  (era 'format': 'netcdf')
-      - Removido 'type': ['forecast']  (parâmetro inválido na API atual)
-      - 'date' como string simples (não lista)
+
+    VALORES ACEITOS PELA API (confirmado na documentação oficial CAMS/ECMWF):
+      - 'data_format': 'netcdf_zip'  → baixa um .zip contendo data_sfc.nc
+                       'grib'        → alternativa, mas requer ecCodes para ler
+      - 'type': 'forecast'           → obrigatório para previsões
+      - 'date': string 'YYYY-MM-DD'  → data de referência do ciclo 00 UTC
+
+    POR QUE 'netcdf_zip' E NÃO 'netcdf' OU 'netcdf4':
+      A nova ADS (ads.atmosphere.copernicus.eu) só aceita 'netcdf_zip' ou 'grib'.
+      O valor 'netcdf' é depreciado e causa erro 400.
+      O valor 'netcdf4' nunca existiu na API — o cliente tentava corrigir
+      para 'netcdf' e ainda envolvia em lista, gerando '400 invalid request'.
     """
     return {
         'variable': ['particulate_matter_2.5um', 'particulate_matter_10um'],
         'date': start_date_obj.strftime('%Y-%m-%d'),
         'time': ['00:00'],
         'leadtime_hour': LEADTIME_HOURS,
-        'data_format': 'netcdf4',
+        'type': 'forecast',
+        'data_format': 'netcdf_zip',
         'area': [-17.0, -58.5, -24.5, -50.5],
     }
+
+
+# ── Função auxiliar: baixa zip do CAMS e extrai o NetCDF interno ─────────────
+def download_cams_and_extract(client_obj, dataset, request, base_filename):
+    """
+    Baixa o arquivo .zip do CAMS e extrai o NetCDF interno (data_sfc.nc).
+    Retorna o caminho do arquivo .nc extraído.
+
+    A API CAMS com data_format='netcdf_zip' sempre retorna um .zip
+    contendo um arquivo chamado 'data_sfc.nc'. Esta função cuida de
+    todo o processo: download → extração → limpeza do zip.
+    """
+    import zipfile
+
+    zip_filename = base_filename.replace('.nc', '') + '.zip'
+
+    # Download do arquivo zip
+    client_obj.retrieve(dataset, request).download(zip_filename)
+
+    # Extrai o NetCDF do zip
+    nc_filename = base_filename if base_filename.endswith('.nc') else base_filename + '.nc'
+    with zipfile.ZipFile(zip_filename, 'r') as zf:
+        namelist = zf.namelist()
+        # O CAMS sempre gera 'data_sfc.nc' internamente
+        nc_inside = next((n for n in namelist if n.endswith('.nc')), namelist[0])
+        with zf.open(nc_inside) as src, open(nc_filename, 'wb') as dst:
+            dst.write(src.read())
+
+    # Remove o zip após extração
+    try:
+        os.remove(zip_filename)
+    except Exception:
+        pass
+
+    return nc_filename
 
 
 # ── Função auxiliar para normalizar unidades do dataset ───────────────────────
@@ -889,13 +933,17 @@ def scheduled_report_campo_grande():
             _scheduler_log.pop()
 
     filename = gif_pm25 = gif_pm10 = None
+    zip_filename = None
     ds = None
 
     try:
         # CORRIGIDO: usa build_cams_request para garantir parâmetros corretos
         request = build_cams_request(start_auto)
-        filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.nc"
-        client.retrieve(dataset, request).download(filename)
+        base_nc  = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.nc"
+        zip_filename = base_nc.replace('.nc', '.zip')
+
+        # CORRIGIDO: baixa zip e extrai o .nc internamente
+        filename = download_cams_and_extract(client, dataset, request, base_nc)
 
         # CORRIGIDO: engine='netcdf4' para garantir compatibilidade
         ds = xr.open_dataset(filename, engine='netcdf4')
@@ -975,7 +1023,7 @@ def scheduled_report_campo_grande():
         print(f"[Scheduler] Erro: {exc}")
 
     finally:
-        for f in [filename, gif_pm25, gif_pm10]:
+        for f in [filename, zip_filename, gif_pm25, gif_pm10]:
             if f and os.path.exists(f):
                 try: os.remove(f)
                 except Exception: pass
@@ -1074,14 +1122,16 @@ def generate_pm_analysis():
 
     # CORRIGIDO: usa build_cams_request para parâmetros válidos
     request = build_cams_request(start_date_obj)
-    # CORRIGIDO: sobrescreve 'area' com a bbox da interface (mesma bbox, mas deixa explícito)
-    request['area'] = [-17.0, -58.5, -24.5, -50.5]
+    # a área da interface é a mesma do build_cams_request, já incluída
 
-    filename = f'PM25_PM10_{city}_{start_date_obj.strftime("%Y%m%d")}.nc'
+    base_nc  = f'PM25_PM10_{city}_{start_date_obj.strftime("%Y%m%d")}.nc'
+    zip_file = base_nc.replace('.nc', '.zip')
+    filename = base_nc  # será o .nc extraído
 
     try:
         with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS (0–120h)...'):
-            client.retrieve(dataset, request).download(filename)
+            # CORRIGIDO: baixa zip e extrai o .nc internamente
+            filename = download_cams_and_extract(client, dataset, request, base_nc)
 
         # CORRIGIDO: engine='netcdf4' para leitura robusta
         ds = xr.open_dataset(filename, engine='netcdf4')
@@ -1175,9 +1225,10 @@ def generate_pm_analysis():
         st.code(traceback.format_exc())
         return None
     finally:
-        if os.path.exists(filename):
-            try: os.remove(filename)
-            except Exception: pass
+        for f in [filename, zip_file]:
+            if f and os.path.exists(f):
+                try: os.remove(f)
+                except Exception: pass
 
 
 # ── Carregamento dos shapes ────────────────────────────────────────────────────

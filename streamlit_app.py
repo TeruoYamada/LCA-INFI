@@ -23,6 +23,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import base64
+import matplotlib
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -497,8 +498,11 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         vmax = min(300, vmax_raw + 15)
         colormap_name = 'Oranges'
 
-    import copy
-    cmap_obj = plt.cm.get_cmap(colormap_name).copy()
+    # CORRIGIDO: plt.cm.get_cmap() foi depreciado no matplotlib >= 3.7
+    try:
+        cmap_obj = matplotlib.colormaps[colormap_name].copy()
+    except AttributeError:
+        cmap_obj = plt.cm.get_cmap(colormap_name)
     cmap_obj.set_under('white')
 
     ms_extent = [-58.5, -50.5, -24.5, -17.0]
@@ -543,7 +547,6 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
                        cmap=cmap_obj, vmin=vmin, vmax=vmax,
                        transform=ccrs.PlateCarree(), alpha=0.8)
 
-    # CORREÇÃO: extend='max' — seta apenas no lado superior, sem indicar negativo
     cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal',
                         extend='max')
     cbar.set_label(f'{pm_type} (μg/m³)', fontsize=12, weight='bold')
@@ -805,6 +808,56 @@ def keep_alive():
         print(f"[KEEPALIVE] Erro: {e}")
 
 
+# ── Função auxiliar para construir o request CAMS corretamente ────────────────
+def build_cams_request(start_date_obj):
+    """
+    Constrói o dicionário de requisição para a API CAMS ADS v1.
+    CORREÇÕES aplicadas:
+      - 'data_format': 'netcdf4'  (era 'format': 'netcdf')
+      - Removido 'type': ['forecast']  (parâmetro inválido na API atual)
+      - 'date' como string simples (não lista)
+    """
+    return {
+        'variable': ['particulate_matter_2.5um', 'particulate_matter_10um'],
+        'date': start_date_obj.strftime('%Y-%m-%d'),
+        'time': ['00:00'],
+        'leadtime_hour': LEADTIME_HOURS,
+        'data_format': 'netcdf4',
+        'area': [-17.0, -58.5, -24.5, -50.5],
+    }
+
+
+# ── Função auxiliar para normalizar unidades do dataset ───────────────────────
+def normalize_units(ds, var_list):
+    """Normaliza unidades de variáveis PM para μg/m³ diretamente no dataset."""
+    for var in var_list:
+        if var not in ds:
+            continue
+        max_val = float(ds[var].max().values)
+        if max_val < 1e-6:
+            ds[var] = ds[var] * 1e9
+        elif max_val < 1e-3:
+            ds[var] = ds[var] * 1e6
+        elif max_val > 1000:
+            ds[var] = ds[var] / 1000
+    return ds
+
+
+# ── Função auxiliar para identificar variáveis PM no dataset ──────────────────
+def find_pm_vars(ds):
+    """Retorna (pm25_var, pm10_var) ou (None, None) se não encontradas."""
+    variable_names = list(ds.data_vars)
+    pm25_var = next(
+        (v for v in variable_names if 'pm2p5' in v.lower() or '2.5' in v.lower() or 'pm25' in v.lower()),
+        None
+    )
+    pm10_var = next(
+        (v for v in variable_names if ('pm10' in v.lower() or '10um' in v.lower()) and v != pm25_var),
+        None
+    )
+    return pm25_var, pm10_var
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # scheduled_report_campo_grande
 # ══════════════════════════════════════════════════════════════════════════════
@@ -813,6 +866,9 @@ def scheduled_report_campo_grande():
     Busca previsão CAMS a partir de hoje 00 UTC + 5 dias de leadtime.
     Executa às 06h, 12h e 18h (horário de Campo Grande).
     """
+    # CORRIGIDO: usa a variável global 'client' definida no escopo do módulo
+    global client
+
     cidade_auto        = "Campo Grande"
     lat_auto, lon_auto = cities[cidade_auto]
 
@@ -836,37 +892,19 @@ def scheduled_report_campo_grande():
     ds = None
 
     try:
-        # CORREÇÃO: data única (hoje) + leadtime_hour cobrindo 5 dias (0..120h, passo 3h)
-        request = {
-            "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
-            "date": start_auto.strftime('%Y-%m-%d'),
-            "time": ["00:00"],
-            "leadtime_hour": LEADTIME_HOURS,
-            "type": ["forecast"],
-            "format": "netcdf",
-            "area": [-17.0, -58.5, -24.5, -50.5],
-        }
-
+        # CORRIGIDO: usa build_cams_request para garantir parâmetros corretos
+        request = build_cams_request(start_auto)
         filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.nc"
         client.retrieve(dataset, request).download(filename)
 
-        ds = xr.open_dataset(filename)
-        variable_names = list(ds.data_vars)
-        pm25_var = next((v for v in variable_names if "pm2p5" in v.lower() or "2.5" in v), None)
-        pm10_var = next((v for v in variable_names if "pm10" in v.lower() or "10um" in v), None)
+        # CORRIGIDO: engine='netcdf4' para garantir compatibilidade
+        ds = xr.open_dataset(filename, engine='netcdf4')
+        pm25_var, pm10_var = find_pm_vars(ds)
 
         if not pm25_var or not pm10_var:
-            raise ValueError("Variáveis PM não encontradas no dataset CAMS")
+            raise ValueError(f"Variáveis PM não encontradas. Disponíveis: {list(ds.data_vars)}")
 
-        # Normaliza unidades antes de extrair
-        for var in [pm25_var, pm10_var]:
-            max_val = float(ds[var].max().values)
-            if max_val < 1e-6:
-                ds[var] = ds[var] * 1e9
-            elif max_val < 1e-3:
-                ds[var] = ds[var] * 1e6
-            elif max_val > 1000:
-                ds[var] = ds[var] / 1000
+        ds = normalize_units(ds, [pm25_var, pm10_var])
 
         df_ts  = extract_pm_timeseries(ds, lat_auto, lon_auto, pm25_var, pm10_var)
         df_fct = get_cams_forecast_only(df_ts)
@@ -984,7 +1022,8 @@ if "scheduler_started" not in st.session_state:
 try:
     ads_url = st.secrets["ads"]["url"]
     ads_key = st.secrets["ads"]["key"]
-    client  = cdsapi.Client(url=ads_url, key=ads_key)
+    # CORRIGIDO: suppress_output=True evita logs desnecessários no Streamlit
+    client  = cdsapi.Client(url=ads_url, key=ads_key, quiet=True)
 except Exception as e:
     st.error("Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
     st.stop()
@@ -1029,48 +1068,31 @@ para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 def generate_pm_analysis():
     dataset = "cams-global-atmospheric-composition-forecasts"
 
-    # Data única de início; leadtime_hour cobre os 5 dias completos
-    start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_calc  = start_date + timedelta(days=5)
+    start_date_obj = datetime.combine(start_date, datetime.min.time()) \
+        if not isinstance(start_date, datetime) else start_date
+    end_date_calc  = start_date_obj + timedelta(days=5)
 
-    city_bounds = {'north': -17.0, 'south': -24.5, 'east': -50.5, 'west': -58.5}
+    # CORRIGIDO: usa build_cams_request para parâmetros válidos
+    request = build_cams_request(start_date_obj)
+    # CORRIGIDO: sobrescreve 'area' com a bbox da interface (mesma bbox, mas deixa explícito)
+    request['area'] = [-17.0, -58.5, -24.5, -50.5]
 
-    # CORREÇÃO PRINCIPAL: data única + leadtime_hour 0..120 passo 3h
-    request = {
-        'variable': ['particulate_matter_2.5um', 'particulate_matter_10um'],
-        'date': start_date_str,
-        'time': ['00:00'],
-        'leadtime_hour': LEADTIME_HOURS,
-        'type': ['forecast'],
-        'format': 'netcdf',
-        'area': [city_bounds['north'], city_bounds['west'], city_bounds['south'], city_bounds['east']]
-    }
-
-    filename = f'PM25_PM10_{city}_{start_date_str}.nc'
+    filename = f'PM25_PM10_{city}_{start_date_obj.strftime("%Y%m%d")}.nc'
 
     try:
         with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS (0–120h)...'):
             client.retrieve(dataset, request).download(filename)
 
-        ds = xr.open_dataset(filename)
-        variable_names = list(ds.data_vars)
-        pm25_var = next((var for var in variable_names if 'pm2p5' in var.lower() or '2.5' in var), None)
-        pm10_var = next((var for var in variable_names if 'pm10' in var.lower() or '10um' in var), None)
+        # CORRIGIDO: engine='netcdf4' para leitura robusta
+        ds = xr.open_dataset(filename, engine='netcdf4')
+        pm25_var, pm10_var = find_pm_vars(ds)
 
         if not pm25_var or not pm10_var:
-            st.error("Variáveis de PM2.5 ou PM10 não encontradas nos dados.")
-            st.write("Variáveis disponíveis:", variable_names)
+            st.error(f"Variáveis de PM2.5 ou PM10 não encontradas nos dados.")
+            st.write("Variáveis disponíveis:", list(ds.data_vars))
             return None
 
-        # Normaliza unidades logo após o download
-        for var in [pm25_var, pm10_var]:
-            max_val = float(ds[var].max().values)
-            if max_val < 1e-6:
-                ds[var] = ds[var] * 1e9
-            elif max_val < 1e-3:
-                ds[var] = ds[var] * 1e6
-            elif max_val > 1000:
-                ds[var] = ds[var] / 1000
+        ds = normalize_units(ds, [pm25_var, pm10_var])
 
         with st.spinner("Extraindo previsões de PM para o município..."):
             df_timeseries = extract_pm_timeseries(ds, lat_center, lon_center, pm25_var, pm10_var)
@@ -1080,19 +1102,18 @@ def generate_pm_analysis():
             st.write("Dimensões do dataset:", dict(ds.dims))
             return None
 
-        # Usa apenas dados reais do CAMS (sem regressão linear)
         df_forecast = get_cams_forecast_only(df_timeseries)
 
         with st.spinner('Criando animação de PM2.5...'):
             animation_result = create_pm_animation(
-                ds, pm25_var, city, lat_center, lon_center, ms_shapes, start_date, "PM2.5"
+                ds, pm25_var, city, lat_center, lon_center, ms_shapes, start_date_obj, "PM2.5"
             )
             if animation_result is None:
                 return None
             fig_pm25, animate_pm25, frames_pm25 = animation_result
             ani_pm25 = animation.FuncAnimation(fig_pm25, animate_pm25, frames=frames_pm25,
                                                interval=animation_speed, blit=True)
-            gif_filename_pm25 = f'PM25_{city}_{start_date_str}.gif'
+            gif_filename_pm25 = f'PM25_{city}_{start_date_obj.strftime("%Y%m%d")}.gif'
             ani_pm25.save(gif_filename_pm25, writer=animation.PillowWriter(fps=2))
             plt.close(fig_pm25)
 
@@ -1100,13 +1121,13 @@ def generate_pm_analysis():
         if show_pm10_animation:
             with st.spinner('Criando animação de PM10...'):
                 animation_result_pm10 = create_pm_animation(
-                    ds, pm10_var, city, lat_center, lon_center, ms_shapes, start_date, "PM10"
+                    ds, pm10_var, city, lat_center, lon_center, ms_shapes, start_date_obj, "PM10"
                 )
                 if animation_result_pm10 is not None:
                     fig_pm10, animate_pm10, frames_pm10 = animation_result_pm10
                     ani_pm10 = animation.FuncAnimation(fig_pm10, animate_pm10, frames=frames_pm10,
                                                        interval=animation_speed, blit=True)
-                    gif_filename_pm10 = f'PM10_{city}_{start_date_str}.gif'
+                    gif_filename_pm10 = f'PM10_{city}_{start_date_obj.strftime("%Y%m%d")}.gif'
                     ani_pm10.save(gif_filename_pm10, writer=animation.PillowWriter(fps=2))
                     plt.close(fig_pm10)
 
@@ -1126,7 +1147,7 @@ def generate_pm_analysis():
                 df_timeseries=df_timeseries,
                 df_forecast=df_forecast,
                 top_pollution_df=top_pollution_cities,
-                start_date=start_date,
+                start_date=start_date_obj,
                 end_date=end_date_calc,
                 gif_pm25_path=gif_filename_pm25,
                 gif_pm10_path=gif_filename_pm10
@@ -1150,6 +1171,8 @@ def generate_pm_analysis():
         st.error(f"Erro ao processar os dados: {str(e)}")
         st.write("Detalhes da requisição:")
         st.write(request)
+        import traceback
+        st.code(traceback.format_exc())
         return None
     finally:
         if os.path.exists(filename):

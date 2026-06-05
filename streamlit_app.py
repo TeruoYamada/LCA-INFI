@@ -12,6 +12,10 @@ import pandas as pd
 import geopandas as gpd
 import io
 import requests
+import requests as req_lib
+import json
+import time
+import zipfile
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path
 from matplotlib import animation
@@ -52,7 +56,7 @@ _scheduler_log: list = []
 _log_lock = threading.Lock()
 # ──────────────────────────────────────────────────────────────────────────────
 
-# ── leadtime_hour: 0 até 120h em passos de 3h (cobre 5 dias completos) ────────
+# ── leadtime_hour: 0 até 120h em passos de 3h ────────────────────────────────
 LEADTIME_HOURS = [str(h) for h in range(0, 121, 3)]
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -498,7 +502,6 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         vmax = min(300, vmax_raw + 15)
         colormap_name = 'Oranges'
 
-    # CORRIGIDO: plt.cm.get_cmap() foi depreciado no matplotlib >= 3.7
     try:
         cmap_obj = matplotlib.colormaps[colormap_name].copy()
     except AttributeError:
@@ -592,7 +595,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     pm25_values = []
     pm10_values = []
 
-    # Detecta dimensão temporal disponível no dataset
     possible_time_dims = ['valid_time', 'time', 'forecast_reference_time', 'step']
     time_dim = next((d for d in possible_time_dims if d in ds.dims), None)
 
@@ -666,13 +668,8 @@ def calculate_aqi(pm25, pm10):
 
 
 def get_cams_forecast_only(df):
-    """
-    Retorna o DataFrame com os dados reais do CAMS marcados como 'historical'.
-    Não realiza nenhuma extrapolação ou regressão linear.
-    """
     if df.empty:
         return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type'])
-
     df_out = df.copy()
     df_out['type'] = 'historical'
     return df_out[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
@@ -808,61 +805,171 @@ def keep_alive():
         print(f"[KEEPALIVE] Erro: {e}")
 
 
-# ── Função auxiliar para construir o request CAMS corretamente ────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# build_cams_request  ── CORRIGIDO
+# ══════════════════════════════════════════════════════════════════════════════
 def build_cams_request(start_date_obj):
     """
-    Constrói o dicionário de requisição para a API CAMS ADS v1.
+    Constrói o dicionário de requisição para a API CAMS ADS.
 
-    VALORES ACEITOS PELA API (confirmado na documentação oficial CAMS/ECMWF):
-      - 'data_format': 'netcdf_zip'  → baixa um .zip contendo data_sfc.nc
-                       'grib'        → alternativa, mas requer ecCodes para ler
-      - 'type': 'forecast'           → obrigatório para previsões
-      - 'date': string 'YYYY-MM-DD'  → data de referência do ciclo 00 UTC
-
-    POR QUE 'netcdf_zip' E NÃO 'netcdf' OU 'netcdf4':
-      A nova ADS (ads.atmosphere.copernicus.eu) só aceita 'netcdf_zip' ou 'grib'.
-      O valor 'netcdf' é depreciado e causa erro 400.
-      O valor 'netcdf4' nunca existiu na API — o cliente tentava corrigir
-      para 'netcdf' e ainda envolvia em lista, gerando '400 invalid request'.
+    CAMPOS OBRIGATÓRIOS aceitos pela nova ADS (ads.atmosphere.copernicus.eu):
+      - 'data_format': 'netcdf_zip'  ← string simples, NUNCA lista, NUNCA 'netcdf'
+      - 'area': lista de FLOATS [N, W, S, E]  ← NÃO strings
+      - NÃO incluir 'grid'  ← campo não suportado; versões antigas do cdsapi
+                               injetam isso automaticamente — tratado em
+                               download_cams_and_extract()
     """
     return {
-        'variable': ['particulate_matter_2.5um', 'particulate_matter_10um'],
-        'date': start_date_obj.strftime('%Y-%m-%d'),
-        'time': ['00:00'],
+        'variable':      ['particulate_matter_2.5um', 'particulate_matter_10um'],
+        'date':          start_date_obj.strftime('%Y-%m-%d'),
+        'time':          ['00:00'],
         'leadtime_hour': LEADTIME_HOURS,
-        'type': 'forecast',
-        'data_format': 'netcdf_zip',
-        'area': [-17.0, -58.5, -24.5, -50.5],
+        'type':          'forecast',
+        'data_format':   'netcdf_zip',
+        'area':          [-17.0, -58.5, -24.5, -50.5],  # floats: [N, W, S, E]
     }
 
 
-# ── Função auxiliar: baixa zip do CAMS e extrai o NetCDF interno ─────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# _download_via_http  ── helper interno (chamada HTTP direta, sem cdsapi)
+# ══════════════════════════════════════════════════════════════════════════════
+def _download_via_http(ads_url, ads_key, dataset, request, zip_filename,
+                       timeout_submit=30, poll_interval=10, max_wait=1800):
+    """
+    Submete e baixa um job CAMS diretamente via REST, sem passar pelo
+    cliente cdsapi (que pode injetar 'grid' e corromper 'data_format').
+
+    Fluxo:
+      POST  /api/retrieve/v1/processes/{dataset}/execution  → job_id
+      GET   /api/retrieve/v1/jobs/{job_id}                  → polling
+      GET   /api/retrieve/v1/jobs/{job_id}/results          → URL download
+      GET   <url>                                            → zip
+    """
+    base = ads_url.rstrip('/')
+    if '/api/retrieve' in base:
+        base = base.split('/api/retrieve')[0]
+
+    headers = {'PRIVATE-TOKEN': ads_key, 'Content-Type': 'application/json'}
+
+    # 1. Submete
+    submit_url = f"{base}/api/retrieve/v1/processes/{dataset}/execution"
+    resp = req_lib.post(submit_url, headers=headers,
+                        json={'inputs': request}, timeout=timeout_submit)
+    if resp.status_code not in (200, 201, 202):
+        try:
+            err = resp.json()
+        except Exception:
+            err = resp.text
+        raise RuntimeError(f"ADS HTTP {resp.status_code}: {json.dumps(err, indent=2)}")
+
+    job_id = resp.json().get('jobID') or resp.json().get('id')
+    if not job_id:
+        raise RuntimeError(f"job_id não encontrado: {resp.json()}")
+
+    # 2. Polling
+    status_url = f"{base}/api/retrieve/v1/jobs/{job_id}"
+    elapsed = 0
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        s = req_lib.get(status_url, headers=headers, timeout=30)
+        s.raise_for_status()
+        status = s.json().get('status', '')
+        if status == 'successful':
+            break
+        elif status == 'failed':
+            raise RuntimeError(f"Job CAMS falhou: {s.json()}")
+    else:
+        raise TimeoutError(f"Job excedeu {max_wait}s (job_id={job_id})")
+
+    # 3. URL de download
+    r = req_lib.get(f"{base}/api/retrieve/v1/jobs/{job_id}/results",
+                    headers=headers, timeout=30)
+    r.raise_for_status()
+    results = r.json()
+    asset_url = (
+        results.get('asset', {}).get('value', {}).get('href')
+        or results.get('location')
+        or results.get('url')
+    )
+    if not asset_url:
+        raise RuntimeError(f"URL de download não encontrada: {results}")
+
+    # 4. Download do zip
+    with req_lib.get(asset_url, headers=headers, stream=True, timeout=300) as dl:
+        dl.raise_for_status()
+        with open(zip_filename, 'wb') as f:
+            for chunk in dl.iter_content(chunk_size=8192):
+                f.write(chunk)
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# download_cams_and_extract  ── CORRIGIDO
+# ══════════════════════════════════════════════════════════════════════════════
 def download_cams_and_extract(client_obj, dataset, request, base_filename):
     """
-    Baixa o arquivo .zip do CAMS e extrai o NetCDF interno (data_sfc.nc).
-    Retorna o caminho do arquivo .nc extraído.
+    Baixa o arquivo .zip do CAMS e extrai o NetCDF interno.
+    Retorna o caminho do .nc extraído.
 
-    A API CAMS com data_format='netcdf_zip' sempre retorna um .zip
-    contendo um arquivo chamado 'data_sfc.nc'. Esta função cuida de
-    todo o processo: download → extração → limpeza do zip.
+    ESTRATÉGIA:
+      1. Valida o dicionário 'request' (bloqueia campos proibidos como 'grid').
+      2. Tenta download via HTTP direto (evita que o cdsapi legado injete
+         'grid' ou converta 'netcdf_zip' → 'netcdf').
+      3. Fallback para client_obj.retrieve() caso o HTTP direto falhe.
     """
-    import zipfile
+    FORBIDDEN = {'grid', 'format', 'product_type'}
+
+    # Validação preventiva
+    bad = FORBIDDEN.intersection(request.keys())
+    if bad:
+        raise ValueError(f"Campos proibidos no request: {bad}")
+    if request.get('data_format') != 'netcdf_zip':
+        raise ValueError(
+            f"data_format deve ser 'netcdf_zip', recebido: {request.get('data_format')!r}"
+        )
+    # Garante area como floats
+    if 'area' in request:
+        request['area'] = [float(v) for v in request['area']]
 
     zip_filename = base_filename.replace('.nc', '') + '.zip'
+    nc_filename  = base_filename if base_filename.endswith('.nc') else base_filename + '.nc'
+    downloaded   = False
 
-    # Download do arquivo zip
-    client_obj.retrieve(dataset, request).download(zip_filename)
+    # Tentativa 1: HTTP direto
+    try:
+        ads_url = (getattr(client_obj, 'url', None)
+                   or getattr(client_obj, '_url', None)
+                   or getattr(getattr(client_obj, 'client', None), 'url', None))
+        ads_key = (getattr(client_obj, 'key', None)
+                   or getattr(client_obj, '_key', None)
+                   or getattr(getattr(client_obj, 'client', None), 'key', None))
 
-    # Extrai o NetCDF do zip
-    nc_filename = base_filename if base_filename.endswith('.nc') else base_filename + '.nc'
+        if ads_url and ads_key:
+            _download_via_http(ads_url, ads_key, dataset, request, zip_filename)
+            downloaded = True
+        else:
+            print("[CAMS] URL/key não encontrados; usando client.retrieve()")
+    except Exception as e_http:
+        print(f"[CAMS] HTTP direto falhou ({e_http}); tentando client.retrieve()...")
+
+    # Tentativa 2: client.retrieve() (fallback)
+    if not downloaded:
+        req_copy = {k: v for k, v in request.items() if k not in FORBIDDEN}
+        client_obj.retrieve(dataset, req_copy).download(zip_filename)
+
+    # Extração do .nc
+    if not os.path.exists(zip_filename):
+        raise FileNotFoundError(f"Zip não encontrado: {zip_filename}")
+
     with zipfile.ZipFile(zip_filename, 'r') as zf:
-        namelist = zf.namelist()
-        # O CAMS sempre gera 'data_sfc.nc' internamente
-        nc_inside = next((n for n in namelist if n.endswith('.nc')), namelist[0])
+        namelist  = zf.namelist()
+        nc_inside = next((n for n in namelist if n.endswith('.nc')), None)
+        if nc_inside is None:
+            raise RuntimeError(f"Nenhum .nc no zip. Conteúdo: {namelist}")
         with zf.open(nc_inside) as src, open(nc_filename, 'wb') as dst:
             dst.write(src.read())
 
-    # Remove o zip após extração
     try:
         os.remove(zip_filename)
     except Exception:
@@ -871,7 +978,9 @@ def download_cams_and_extract(client_obj, dataset, request, base_filename):
     return nc_filename
 
 
-# ── Função auxiliar para normalizar unidades do dataset ───────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# normalize_units
+# ══════════════════════════════════════════════════════════════════════════════
 def normalize_units(ds, var_list):
     """Normaliza unidades de variáveis PM para μg/m³ diretamente no dataset."""
     for var in var_list:
@@ -887,7 +996,9 @@ def normalize_units(ds, var_list):
     return ds
 
 
-# ── Função auxiliar para identificar variáveis PM no dataset ──────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# find_pm_vars
+# ══════════════════════════════════════════════════════════════════════════════
 def find_pm_vars(ds):
     """Retorna (pm25_var, pm10_var) ou (None, None) se não encontradas."""
     variable_names = list(ds.data_vars)
@@ -906,11 +1017,6 @@ def find_pm_vars(ds):
 # scheduled_report_campo_grande
 # ══════════════════════════════════════════════════════════════════════════════
 def scheduled_report_campo_grande():
-    """
-    Busca previsão CAMS a partir de hoje 00 UTC + 5 dias de leadtime.
-    Executa às 06h, 12h e 18h (horário de Campo Grande).
-    """
-    # CORRIGIDO: usa a variável global 'client' definida no escopo do módulo
     global client
 
     cidade_auto        = "Campo Grande"
@@ -937,15 +1043,12 @@ def scheduled_report_campo_grande():
     ds = None
 
     try:
-        # CORRIGIDO: usa build_cams_request para garantir parâmetros corretos
         request = build_cams_request(start_auto)
         base_nc  = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d')}.nc"
         zip_filename = base_nc.replace('.nc', '.zip')
 
-        # CORRIGIDO: baixa zip e extrai o .nc internamente
         filename = download_cams_and_extract(client, dataset, request, base_nc)
 
-        # CORRIGIDO: engine='netcdf4' para garantir compatibilidade
         ds = xr.open_dataset(filename, engine='netcdf4')
         pm25_var, pm10_var = find_pm_vars(ds)
 
@@ -1025,12 +1128,15 @@ def scheduled_report_campo_grande():
     finally:
         for f in [filename, zip_filename, gif_pm25, gif_pm10]:
             if f and os.path.exists(f):
-                try: os.remove(f)
-                except Exception: pass
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
         if ds is not None:
-            try: ds.close()
-            except Exception: pass
-# ══════════════════════════════════════════════════════════════════════════════
+            try:
+                ds.close()
+            except Exception:
+                pass
 
 
 # ── Configuração da página ─────────────────────────────────────────────────────
@@ -1063,14 +1169,12 @@ if "scheduler_started" not in st.session_state:
     _sched.start()
     st.session_state["scheduler_started"] = True
     st.session_state["scheduler_obj"]     = _sched
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 # ── Credenciais CDS ───────────────────────────────────────────────────────────
 try:
     ads_url = st.secrets["ads"]["url"]
     ads_key = st.secrets["ads"]["key"]
-    # CORRIGIDO: suppress_output=True evita logs desnecessários no Streamlit
     client  = cdsapi.Client(url=ads_url, key=ads_key, quiet=True)
 except Exception as e:
     st.error("Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
@@ -1120,20 +1224,15 @@ def generate_pm_analysis():
         if not isinstance(start_date, datetime) else start_date
     end_date_calc  = start_date_obj + timedelta(days=5)
 
-    # CORRIGIDO: usa build_cams_request para parâmetros válidos
-    request = build_cams_request(start_date_obj)
-    # a área da interface é a mesma do build_cams_request, já incluída
-
+    request  = build_cams_request(start_date_obj)
     base_nc  = f'PM25_PM10_{city}_{start_date_obj.strftime("%Y%m%d")}.nc'
     zip_file = base_nc.replace('.nc', '.zip')
-    filename = base_nc  # será o .nc extraído
+    filename = base_nc
 
     try:
         with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS (0–120h)...'):
-            # CORRIGIDO: baixa zip e extrai o .nc internamente
             filename = download_cams_and_extract(client, dataset, request, base_nc)
 
-        # CORRIGIDO: engine='netcdf4' para leitura robusta
         ds = xr.open_dataset(filename, engine='netcdf4')
         pm25_var, pm10_var = find_pm_vars(ds)
 
@@ -1227,8 +1326,10 @@ def generate_pm_analysis():
     finally:
         for f in [filename, zip_file]:
             if f and os.path.exists(f):
-                try: os.remove(f)
-                except Exception: pass
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
 
 
 # ── Carregamento dos shapes ────────────────────────────────────────────────────
@@ -1247,7 +1348,6 @@ city = st.sidebar.selectbox("Selecione o município para análise detalhada",
                              available_cities, index=default_city_index)
 lat_center, lon_center = cities[city]
 
-# Apenas data de início — sem data final, sem seletores de hora
 st.sidebar.subheader("Período de Análise")
 start_date = st.sidebar.date_input(
     "Data de Início",

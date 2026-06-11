@@ -53,93 +53,200 @@ _log_lock = threading.Lock()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FIX CENTRAL — build_cams_request
+# PATCH CENTRAL — apply_ads_client_patch
 # ------------------------------------------------------------------------------
-# DIAGNÓSTICO DOS 3 BUGS QUE CAUSAVAM O ERRO 400:
+# DIAGNÓSTICO CONFIRMADO PELO TRACEBACK (payload rejeitado pelo ADS):
 #
-# BUG 1 — parâmetro 'grid' injetado pelo cdsapi legado
-#   O cdsapi ≤ 0.6.x injeta automaticamente 'grid': ['0.4', '0.4'] em
-#   qualquer requisição ao dataset CAMS global. A nova API ADS (v1) não
-#   aceita esse parâmetro e retorna 400 imediatamente.
-#   SOLUÇÃO: passar explicit_grid=False no Client() e nunca incluir 'grid'
-#   manualmente. Para garantia, adicionamos a instrução no build da request.
+#   'data_format': ['netcdf']   ← lib sobrescreve 'netcdf_zip' → 'netcdf' + lista
+#   'grid': ['0.4', '0.4']      ← injetado automaticamente pelo legacy_client
 #
-# BUG 2 — intervalo de datas com múltiplos dias + leadtime 0-120h
-#   Ao passar 'date': '2026-06-11/2026-06-16' (6 dias) + 41 leadtimes de 3h,
-#   a API interpreta isso como 6 runs × 41 passos = 246 campos × 2 variáveis,
-#   o que ultrapassa o limite interno de tamanho/combinações válidas do ADS.
-#   O CAMS global forecast roda 2x/dia (00 e 12 UTC) e cada run já entrega
-#   5 dias completos via leadtime. Para obter "próximos 5 dias" basta pedir
-#   UMA única data (o run 00 UTC de hoje) + leadtime 0–120h.
-#   SOLUÇÃO: 'date' sempre = única data (start_date apenas), nunca intervalo.
+# CAUSA RAIZ:
+#   O ecmwf-datastores legacy_client.py, ao processar a requisição internamente,
+#   (a) injeta 'grid': ['0.4', '0.4'] em todo pedido CAMS/ADS,
+#   (b) serializa valores como listas mesmo quando strings simples foram passadas,
+#   (c) pode sobrescrever 'data_format' de 'netcdf_zip' para 'netcdf'.
 #
-# BUG 3 — 'data_format' passado como lista ['netcdf_zip'] em vez de string
-#   Algumas versões do cdsapi serializam o valor como lista. A nova API ADS
-#   aceita apenas string simples para data_format.
-#   SOLUÇÃO: sempre passar como string 'netcdf_zip', não como lista.
+#   A documentação oficial da ADS declara explicitamente:
+#   "The keyword 'grid' is not supported for CDS API requests on the ADS."
+#
+# SOLUÇÃO:
+#   Monkey-patch do método submit() do objeto interno _retrieve_api do cliente
+#   cdsapi. O patch intercepta o request dict APÓS o processamento interno da
+#   lib (onde grid é injetado e data_format pode ser adulterado), mas ANTES do
+#   envio HTTP ao servidor, garantindo:
+#     1. Remoção do parâmetro 'grid'
+#     2. Restauração de 'data_format' para 'netcdf_zip' (string, não lista)
+#     3. Desserialização de qualquer valor de string que veio como lista
+#        de 1 elemento (ex: ['netcdf'] → 'netcdf_zip')
+#
+# APLICAÇÃO:
+#   Chamar apply_ads_client_patch(client) logo após criar o cdsapi.Client().
+#   O patch é idempotente — aplicar mais de uma vez não causa efeito duplo.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Campos que DEVEM ser strings simples (não listas) na nova ADS API
+_ADS_STRING_FIELDS = {
+    'data_format', 'format', 'type', 'time', 'date',
+    'product_type', 'download_format',
+}
+
+# Valor correto para data_format: sempre netcdf_zip para CAMS global forecasts
+_CAMS_DATA_FORMAT = 'netcdf_zip'
+
+
+def _sanitize_ads_request(request: dict) -> dict:
+    """
+    Limpa o dict de requisição para conformidade com a nova ADS API:
+      - Remove 'grid' (não suportado pelo ADS)
+      - Garante que 'data_format' seja 'netcdf_zip' como string
+      - Converte listas de 1 elemento para string nos campos conhecidos
+    """
+    cleaned = dict(request)
+
+    # 1. Remove parâmetro 'grid' — causa 400 imediato no ADS
+    cleaned.pop('grid', None)
+
+    # 2. Corrige campos que devem ser strings simples
+    for field in _ADS_STRING_FIELDS:
+        if field in cleaned and isinstance(cleaned[field], list):
+            if len(cleaned[field]) == 1:
+                cleaned[field] = cleaned[field][0]
+
+    # 3. Força data_format = 'netcdf_zip' (a lib pode sobrescrever para 'netcdf')
+    if 'data_format' in cleaned:
+        val = cleaned['data_format']
+        if isinstance(val, list):
+            val = val[0] if val else 'netcdf_zip'
+        # Se a lib degradou para 'netcdf' ou 'grib', restaura para netcdf_zip
+        if val in ('netcdf', 'grib', ''):
+            val = _CAMS_DATA_FORMAT
+        cleaned['data_format'] = val
+    else:
+        # Campo ausente: adiciona com valor correto
+        cleaned['data_format'] = _CAMS_DATA_FORMAT
+
+    return cleaned
+
+
+def apply_ads_client_patch(cds_client):
+    """
+    Aplica monkey-patch no cdsapi.Client para remover 'grid' e corrigir
+    'data_format' DEPOIS que o legacy_client processa o request internamente,
+    mas ANTES do envio HTTP.
+
+    Estratégia de patch em dois níveis:
+      Nível 1 — wrap de client.retrieve(): sanitiza antes de repassar à lib.
+      Nível 2 — wrap do objeto _retrieve_api.submit() interno: sanitiza após
+                 o processamento interno da lib (garante remoção mesmo que a
+                 lib reinjecte 'grid' ou adulere 'data_format' internamente).
+
+    O patch é idempotente: verificamos _ads_patch_applied antes de aplicar.
+    """
+    if getattr(cds_client, '_ads_patch_applied', False):
+        return cds_client  # já patcheado
+
+    # ── Nível 1: wrap do método retrieve() público ────────────────────────────
+    original_retrieve = cds_client.retrieve
+
+    def patched_retrieve(collection_id, request, *args, **kwargs):
+        clean_req = _sanitize_ads_request(request)
+        return original_retrieve(collection_id, clean_req, *args, **kwargs)
+
+    cds_client.retrieve = patched_retrieve
+
+    # ── Nível 2: wrap do _retrieve_api.submit() interno ───────────────────────
+    # Este é o ponto onde legacy_client injeta 'grid' e pode adulerar
+    # data_format. Precisamos interceptar aqui para cobertura total.
+    try:
+        _retrieve_api = cds_client.client   # ecmwf-datastores >= 0.5
+    except AttributeError:
+        _retrieve_api = None
+
+    if _retrieve_api is None:
+        try:
+            _retrieve_api = cds_client._retrieve_api  # versões anteriores
+        except AttributeError:
+            _retrieve_api = None
+
+    if _retrieve_api is not None:
+        try:
+            original_submit = _retrieve_api.submit
+
+            def patched_submit(collection_id, request, *args, **kwargs):
+                clean_req = _sanitize_ads_request(request)
+                return original_submit(collection_id, clean_req, *args, **kwargs)
+
+            _retrieve_api.submit = patched_submit
+        except Exception:
+            # Se não conseguiu patchear o nível 2, o nível 1 ainda protege
+            pass
+
+    cds_client._ads_patch_applied = True
+    return cds_client
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# build_cams_request  +  download_cams_data
 # ══════════════════════════════════════════════════════════════════════════════
 
 def build_cams_request(start_date, area=None):
     """
     Constrói a requisição correta para o CAMS global forecast.
 
-    Regras meteorológicas fundamentais:
-    - O CAMS global roda às 00 UTC e 12 UTC → usamos sempre 00 UTC.
-    - Cada run já contém 120h (5 dias) de leadtime em passos de 1h (sfc) ou 3h.
-    - Para "previsão dos próximos 5 dias" basta UMA data + leadtime 0–120h.
-    - Passar um intervalo de datas com alto leadtime = pedido explosivo → 400.
-    - O parâmetro 'grid' não deve ser incluído na nova ADS API.
-    - 'data_format' deve ser string simples, não lista.
-
-    Parameters
-    ----------
-    start_date : datetime.date | datetime.datetime
-        Data de referência do run (será formatada como YYYY-MM-DD).
-    area : list, optional
-        Bounding box [N, W, S, E]. Default = Mato Grosso do Sul.
+    Regras:
+    - Uma única data (start_date) — não intervalo. O run 00 UTC já cobre 5 dias.
+    - Leadtimes 0–120h em passos de 3h (41 valores).
+    - data_format = 'netcdf_zip' como string simples.
+    - SEM parâmetro 'grid' — proibido na nova ADS API.
+    - Todos os valores escalares como strings, não listas.
     """
     if area is None:
-        area = [-17.0, -58.5, -24.5, -50.5]   # [N, W, S, E]
+        area = [-17.0, -58.5, -24.5, -50.5]   # [N, W, S, E] — Mato Grosso do Sul
 
-    # Garante formato de string da data — aceita date, datetime ou Timestamp
     if hasattr(start_date, 'strftime'):
         date_str = start_date.strftime('%Y-%m-%d')
     else:
         date_str = str(start_date)[:10]
 
-    # Leadtimes em passos de 3h: 0, 3, 6 … 120 h (41 valores = 5 dias completos)
-    leadtimes = [str(h) for h in range(0, 121, 3)]
+    leadtimes = [str(h) for h in range(0, 121, 3)]   # '0', '3', '6' … '120'
 
     return {
         'variable': [
             'particulate_matter_2.5um',
             'particulate_matter_10um',
         ],
-        'date': date_str,          # ← STRING simples, nunca intervalo
-        'time': '00:00',           # ← STRING simples, não lista; sempre 00 UTC
+        'date': date_str,           # string simples, nunca intervalo
+        'time': '00:00',            # string simples
         'leadtime_hour': leadtimes,
-        'type': 'forecast',        # ← STRING simples
-        'data_format': 'netcdf_zip',  # ← STRING simples, nunca lista
-        'area': area,              # [N, W, S, E]
-        # NÃO incluir 'grid' — causa 400 na nova ADS API
+        'type': 'forecast',         # string simples
+        'data_format': 'netcdf_zip',  # string simples — o patch reforça isso
+        'area': area,               # [N, W, S, E]
+        # ⚠ NÃO incluir 'grid' — o patch também garante a remoção
     }
 
 
 def download_cams_data(client, start_date, zip_filename, area=None):
     """
     Baixa dados CAMS, extrai o .nc do zip e retorna o caminho do arquivo .nc.
-    Trata os dois formatos possíveis de retorno: .zip e .netcdf_zip.
+
+    O cliente DEVE ter sido patcheado com apply_ads_client_patch() antes desta
+    chamada — isso já ocorre na inicialização do app (seção ── Credenciais CDS).
     """
     import zipfile as _zipfile
 
     request = build_cams_request(start_date, area=area)
+
+    # _sanitize_ads_request é chamado pelo patch dentro de client.retrieve(),
+    # mas aplicamos aqui também como defesa em profundidade.
+    request = _sanitize_ads_request(request)
 
     client.retrieve(
         'cams-global-atmospheric-composition-forecasts',
         request
     ).download(zip_filename)
 
-    # O ADS pode retornar um zip mesmo que a extensão seja .netcdf_zip
+    # Extrai o .nc do arquivo zip retornado
     with _zipfile.ZipFile(zip_filename, 'r') as zf:
         nc_names = [n for n in zf.namelist() if n.endswith('.nc')]
         if not nc_names:
@@ -634,7 +741,6 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
 
     masked_first = np.ma.masked_less(first_frame_data, THRESHOLD)
 
-    # Detecta coordenadas lon/lat no dataset
     lon_coord = ds.get('longitude', ds.get('lon', None))
     lat_coord = ds.get('latitude',  ds.get('lat', None))
 
@@ -679,11 +785,8 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
 def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     """
     Extrai série temporal de PM2.5 e PM10 para um ponto lat/lon.
-    Suporta os dois formatos possíveis de saída do CAMS:
-      - dim 'valid_time' (novo cdsapi/cfgrib)
-      - dim 'time' ou 'forecast_reference_time'
+    Suporta os formatos de saída do CAMS: 'valid_time', 'time', 'forecast_reference_time'.
     """
-    # Detecta coordenadas de grade
     lat_vals = ds.get('latitude',  ds.get('lat', None))
     lon_vals = ds.get('longitude', ds.get('lon', None))
     if lat_vals is None or lon_vals is None:
@@ -692,7 +795,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     lat_idx = int(np.abs(lat_vals.values - lat).argmin())
     lon_idx = int(np.abs(lon_vals.values - lon).argmin())
 
-    # Detecta dimensão temporal — prioridade: valid_time > time > forecast_reference_time
     time_dim = None
     for candidate in ['valid_time', 'time', 'forecast_reference_time']:
         if candidate in ds.dims:
@@ -709,7 +811,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
     for t_idx in range(len(ds[time_dim])):
         try:
             sel = {time_dim: t_idx}
-            # Tenta indexar por latitude/longitude ou lat/lon
             for lat_name, lon_name in [('latitude', 'longitude'), ('lat', 'lon')]:
                 if lat_name in ds[pm25_var].dims:
                     sel[lat_name] = lat_idx
@@ -722,7 +823,6 @@ def extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var):
             if np.isnan(pm25_val) or np.isnan(pm10_val):
                 continue
 
-            # Conversão de unidades: kg/kg → μg/m³ (multiplicador típico ≈ 1e9 para massa específica)
             if pm25_val < 1e-6:
                 pm25_val *= 1e9; pm10_val *= 1e9
             elif pm25_val < 1e-3:
@@ -964,9 +1064,7 @@ def scheduled_report_campo_grande():
     filename     = None
 
     try:
-        # ── Usa build_cams_request para garantir a request correta ────────────
         filename = download_cams_data(client, start_auto, zip_filename)
-        # ──────────────────────────────────────────────────────────────────────
 
         ds = xr.open_dataset(filename)
         variable_names = list(ds.data_vars)
@@ -1099,11 +1197,23 @@ if "scheduler_started" not in st.session_state:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-# ── Credenciais CDS ───────────────────────────────────────────────────────────
+# ── Credenciais CDS + aplicação do patch ──────────────────────────────────────
+# O patch é aplicado UMA VEZ aqui, logo após criar o client, e reutilizado
+# em todas as chamadas subsequentes (scheduler, UI, etc).
+# ──────────────────────────────────────────────────────────────────────────────
 try:
     ads_url = st.secrets["ads"]["url"]
     ads_key = st.secrets["ads"]["key"]
     client  = cdsapi.Client(url=ads_url, key=ads_key)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # APLICAÇÃO DO PATCH — remove 'grid' e corrige 'data_format' que o
+    # legacy_client injeta/adultera antes de enviar ao ADS.
+    # Deve ser chamado imediatamente após criar o client.
+    # ══════════════════════════════════════════════════════════════════════════
+    apply_ads_client_patch(client)
+    # ══════════════════════════════════════════════════════════════════════════
+
 except Exception as e:
     st.error("Erro ao carregar as credenciais do CDS API. Verifique seu secrets.toml.")
     st.stop()
@@ -1147,8 +1257,6 @@ para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 
 
 def generate_pm_analysis():
-    # ── Constrói a requisição usando a função centralizada ─────────────────────
-    # BUG FIX: não passa mais um intervalo de datas nem o parâmetro 'grid'
     zip_filename = f'PM25_PM10_{city}_{start_date}.zip'
 
     try:
@@ -1595,9 +1703,11 @@ with st.expander("Suporte e Informações Técnicas"):
     - Keep-alive: ping a cada 5 minutos para manter a página ativa
 
     **Correções aplicadas nesta versão:**
+    - Monkey-patch do legacy_client: remove 'grid' e corrige 'data_format' após
+      processamento interno da lib, antes do envio HTTP ao ADS
+    - Sanitização em dois níveis: wrap de client.retrieve() + wrap de _retrieve_api.submit()
     - Requisição CAMS: data única (não intervalo) + leadtime 0–120 h
-    - Removido parâmetro 'grid' incompatível com a nova ADS API
-    - Todos os parâmetros passados como strings simples (não listas)
+    - data_format sempre como 'netcdf_zip' string (nunca lista, nunca 'netcdf' simples)
     - Detecção automática de dimensão temporal (valid_time / time)
 
     **Vantagens das Previsões CAMS:**

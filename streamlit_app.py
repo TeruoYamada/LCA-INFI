@@ -250,7 +250,7 @@ def enviar_relatorio_email(
                 🌍 Relatório de Qualidade do Ar
               </h1>
               <p style='color:{txt_h};margin:8px 0 0;font-size:15px;opacity:.92;'>
-                Mato Grosso do Sul — Monitor PM2.5 / PM10 (CAMS)
+                Mato Grosso do Sul — Previsão PM2.5 / PM10 (CAMS)
               </p>
             </div>
 
@@ -417,7 +417,7 @@ def enviar_relatorio_email(
 
               <p style='color:#bbb;font-size:11px;margin-top:32px;border-top:1px solid #eee;
                         padding-top:14px;text-align:center;'>
-                Relatório gerado automaticamente pelo <strong>Monitor PM2.5/PM10 — MS</strong>.<br>
+                Relatório gerado automaticamente pelo <strong>Previsão PM2.5/PM10 — MS</strong>.<br>
                 Dados: CAMS (Copernicus Atmosphere Monitoring Service) ·
                 {datetime.now().strftime("%d/%m/%Y %H:%M")}<br>
                 Resolução espacial: ~0.4° × 0.4° · Temporal: 3h
@@ -543,8 +543,9 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
                        cmap=cmap_obj, vmin=vmin, vmax=vmax,
                        transform=ccrs.PlateCarree(), alpha=0.8)
 
+    # MUDANÇA 4: extend='max' para indicar apenas valores acima do máximo da escala
     cbar = plt.colorbar(im, fraction=0.046, pad=0.04, orientation='horizontal',
-                        extend='min')
+                        extend='max')
     cbar.set_label(f'{pm_type} (μg/m³)', fontsize=12, weight='bold')
     cbar.ax.tick_params(labelsize=10)
 
@@ -691,98 +692,36 @@ def calculate_aqi(pm25, pm10):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORREÇÃO PRINCIPAL: predict_future_values
-# Problema original: max_date chegava como datetime.date (do st.date_input),
-# mas o código chamava .replace(hour=23, ...) que só existe em datetime.datetime,
-# fazendo max_dt ficar incorreto e o filtro de datas falhar silenciosamente.
+# MUDANÇA 5: predict_future_values agora retorna apenas os dados históricos
+# do CAMS, sem extrapolação por regressão linear. O campo 'type' é definido
+# como 'historical' para manter compatibilidade com o restante do código.
 # ══════════════════════════════════════════════════════════════════════════════
 def predict_future_values(df, days=5, max_date=None):
     """
-    Gera previsões por regressão linear respeitando estritamente max_date.
+    Retorna apenas os dados reais do CAMS (sem extrapolação por regressão).
+    O parâmetro max_date é respeitado para filtrar registros além do limite.
     Aceita max_date como datetime.date, datetime.datetime ou pd.Timestamp.
     """
-    if len(df) < 3:
+    if df.empty:
         return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type'])
 
-    df_hist = df.copy()
-    df_hist['time_numeric'] = (df_hist['time'] - df_hist['time'].min()).dt.total_seconds()
+    df_result = df.copy()
+    df_result['type'] = 'historical'
 
-    mask_valid = ~np.isnan(df_hist['pm25'].values) & ~np.isnan(df_hist['pm10'].values)
-
-    if mask_valid.sum() < 2:
-        df_hist['type'] = 'historical'
-        return df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
-
-    X_clean = df_hist.loc[mask_valid, 'time_numeric'].values.reshape(-1, 1)
-    y_pm25  = df_hist.loc[mask_valid, 'pm25'].values
-    y_pm10  = df_hist.loc[mask_valid, 'pm10'].values
-
-    model_pm25 = LinearRegression()
-    model_pm25.fit(X_clean, y_pm25)
-
-    model_pm10 = LinearRegression()
-    model_pm10.fit(X_clean, y_pm10)
-
-    last_time = df_hist['time'].max()
-
-    # ── CORREÇÃO: converte max_date para pd.Timestamp independentemente do tipo ──
+    # Filtra pelo limite máximo de datas, se fornecido
     if max_date is not None:
         if isinstance(max_date, pd.Timestamp):
-            # Já é Timestamp — apenas fixa horário no fim do dia
             max_dt = max_date.replace(hour=23, minute=59, second=59)
         elif isinstance(max_date, datetime):
-            # datetime.datetime — converte direto
             max_dt = pd.Timestamp(max_date).replace(hour=23, minute=59, second=59)
         else:
-            # datetime.date (vindo do st.date_input) — constrói datetime explicitamente
+            # datetime.date vindo do st.date_input
             max_dt = pd.Timestamp(
                 datetime(max_date.year, max_date.month, max_date.day, 23, 59, 59)
             )
-    else:
-        max_dt = None
-    # ──────────────────────────────────────────────────────────────────────────
+        df_result = df_result[df_result['time'] <= max_dt].reset_index(drop=True)
 
-    # Gera candidatos e filtra pelo limite máximo em uma única compreensão
-    future_times = [
-        last_time + timedelta(hours=i * 6)
-        for i in range(1, days * 4 + 1)
-        if (max_dt is None or last_time + timedelta(hours=i * 6) <= max_dt)
-    ]
-
-    if not future_times:
-        df_hist['type'] = 'historical'
-        return df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
-
-    future_time_numeric = np.array(
-        [(t - df_hist['time'].min()).total_seconds() for t in future_times]
-    ).reshape(-1, 1)
-
-    future_pm25 = np.maximum(model_pm25.predict(future_time_numeric), 0)
-    future_pm10 = np.maximum(model_pm10.predict(future_time_numeric), 0)
-
-    future_aqi, future_categories, future_colors = [], [], []
-    for pm25, pm10 in zip(future_pm25, future_pm10):
-        aqi, category, color = calculate_aqi(pm25, pm10)
-        future_aqi.append(aqi)
-        future_categories.append(category)
-        future_colors.append(color)
-
-    df_pred = pd.DataFrame({
-        'time':         future_times,
-        'pm25':         future_pm25,
-        'pm10':         future_pm10,
-        'aqi':          future_aqi,
-        'aqi_category': future_categories,
-        'aqi_color':    future_colors,
-        'type':         'forecast'
-    })
-
-    df_hist['type'] = 'historical'
-    result = pd.concat(
-        [df_hist[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']], df_pred],
-        ignore_index=True
-    )
-    return result
+    return df_result[['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type']]
 # ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -800,7 +739,8 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
 
         if not df_timeseries.empty:
             df_forecast  = predict_future_values(df_timeseries, days=5, max_date=end_date)
-            forecast_only = df_forecast[df_forecast['type'] == 'forecast']
+            # Com a nova lógica, todos os registros são 'historical' (dados reais do CAMS)
+            forecast_only = df_forecast  # usa o dataset completo para o ranking
 
             if not forecast_only.empty:
                 max_day_idx = forecast_only['aqi'].idxmax()
@@ -921,24 +861,20 @@ def keep_alive():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORREÇÃO: scheduled_report_campo_grande
-# end_auto agora termina às 23:59:59 do último dia (não às HH:00 do executor),
-# evitando que candidatos de 00h do dia seguinte passem pelo filtro.
+# scheduled_report_campo_grande — sem extrapolação, usa apenas dados CAMS
 # ══════════════════════════════════════════════════════════════════════════════
 def scheduled_report_campo_grande():
     """
-    Busca sempre a previsão a partir do momento atual (horário mais recente).
+    Busca sempre a previsão a partir do momento atual (00 UTC do dia corrente).
     Executa às 06h, 12h e 18h (horário de Campo Grande).
     """
     cidade_auto        = "Campo Grande"
     lat_auto, lon_auto = cities[cidade_auto]
 
-    agora    = datetime.now()
-    hora_ref = (agora.hour // 3) * 3
-    start_auto = agora.replace(hour=hora_ref, minute=0, second=0, microsecond=0)
-
-    # CORREÇÃO: fixa o fim exatamente em 23:59:59 do último dia do período
-    end_auto = (start_auto + timedelta(days=5)).replace(hour=23, minute=59, second=59)
+    agora      = datetime.now()
+    # MUDANÇA 2/3: usa sempre 00 UTC como referência; end = start + 5 dias às 23:59:59
+    start_auto = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_auto   = (start_auto + timedelta(days=5)).replace(hour=23, minute=59, second=59)
 
     dataset = "cams-global-atmospheric-composition-forecasts"
 
@@ -959,7 +895,7 @@ def scheduled_report_campo_grande():
         request = {
             "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
             "date": f"{start_auto.strftime('%Y-%m-%d')}/{end_auto.strftime('%Y-%m-%d')}",
-            "time": [f"{h:02d}:00" for h in range(0, 24, 3)],
+            "time": ["00:00"],  # MUDANÇA 2: apenas 00 UTC
             "leadtime_hour": ["0", "24", "48", "72", "96", "120"],
             "type": ["forecast"],
             "format": "netcdf",
@@ -998,16 +934,16 @@ def scheduled_report_campo_grande():
                 df_c = extract_pm_timeseries(ds, lat_c, lon_c, pm25_var, pm10_var)
                 if not df_c.empty:
                     df_fc   = predict_future_values(df_c, days=5, max_date=end_auto)
-                    fc_only = df_fc[df_fc["type"] == "forecast"]
-                    if not fc_only.empty:
-                        idx_mx = fc_only["aqi"].idxmax()
+                    # Sem extrapolação: usa todos os registros disponíveis
+                    if not df_fc.empty:
+                        idx_mx = df_fc["aqi"].idxmax()
                         results_list.append({
                             "cidade":    city_name,
-                            "pm25_max":  round(float(fc_only["pm25"].max()), 1),
-                            "pm10_max":  round(float(fc_only["pm10"].max()), 1),
-                            "aqi_max":   round(float(fc_only["aqi"].max()),  0),
-                            "data_max":  fc_only.loc[idx_mx, "time"],
-                            "categoria": fc_only.loc[idx_mx, "aqi_category"],
+                            "pm25_max":  round(float(df_fc["pm25"].max()), 1),
+                            "pm10_max":  round(float(df_fc["pm10"].max()), 1),
+                            "aqi_max":   round(float(df_fc["aqi"].max()),  0),
+                            "data_max":  df_fc.loc[idx_mx, "time"],
+                            "categoria": df_fc.loc[idx_mx, "aqi_category"],
                         })
             if results_list:
                 top_df = (
@@ -1073,7 +1009,8 @@ def scheduled_report_campo_grande():
 
 
 # ── Configuração da página ─────────────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_icon="🌍")
+# MUDANÇA 1: título da aba do navegador atualizado
+st.set_page_config(layout="wide", page_title="Previsão PM2.5/PM10 - MS", page_icon="🌍")
 
 
 # ── Inicializa o scheduler UMA ÚNICA VEZ por processo ─────────────────────────
@@ -1135,9 +1072,10 @@ def load_ms_municipalities():
 
 
 # ── Interface principal ────────────────────────────────────────────────────────
-st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
+# MUDANÇA 1: títulos atualizados de "Monitoramento" / "Sistema Integrado" para "Previsão"
+st.title("🌍 Previsão de PM2.5 e PM10 - Mato Grosso do Sul")
 st.markdown("""
-### Sistema Integrado de Monitoramento da Qualidade do Ar
+### Sistema de Previsão da Qualidade do Ar
 
 Este aplicativo apresenta as previsões de concentrações de Material Particulado (PM2.5 e PM10)
 para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
@@ -1147,7 +1085,7 @@ para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 - Visualização centralizada no município selecionado com contornos municipais
 - Animações temporais para PM2.5 e PM10
 - Índice de Qualidade do Ar (IQA) calculado
-- Previsões limitadas à data final selecionada
+- Previsões para os próximos 5 dias a partir de 00 UTC
 - Relatório automático de Campo Grande enviado às **06h, 12h e 18h** por e-mail
 """)
 
@@ -1158,18 +1096,8 @@ def generate_pm_analysis():
     start_date_str = start_date.strftime('%Y-%m-%d')
     end_date_str   = end_date.strftime('%Y-%m-%d')
 
-    hours = []
-    current_hour = start_hour
-    while True:
-        hours.append(f"{current_hour:02d}:00")
-        if current_hour == end_hour:
-            break
-        current_hour = (current_hour + 3) % 24
-        if current_hour == start_hour:
-            break
-
-    if not hours:
-        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
+    # MUDANÇA 2: apenas 00 UTC, sem entrada de hora pelo usuário
+    hours = ['00:00']
 
     city_bounds = {'north': -17.0, 'south': -24.5, 'east': -50.5, 'west': -58.5}
 
@@ -1206,7 +1134,7 @@ def generate_pm_analysis():
             st.error("Não foi possível extrair série temporal para este local.")
             return None
 
-        with st.spinner("Gerando previsões estendidas..."):
+        with st.spinner("Organizando dados do CAMS..."):
             df_forecast = predict_future_values(df_timeseries, days=5, max_date=end_date)
 
         with st.spinner('Criando animação de PM2.5...'):
@@ -1307,15 +1235,16 @@ city = st.sidebar.selectbox("Selecione o município para análise detalhada",
                              available_cities, index=default_city_index)
 lat_center, lon_center = cities[city]
 
+# MUDANÇA 2/3: apenas data de início na sidebar; data final calculada automaticamente (+5 dias)
 st.sidebar.subheader("Período de Análise")
-start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
-end_date   = st.sidebar.date_input("Data Final",     datetime.today() + timedelta(days=5))
+start_date = st.sidebar.date_input("Data de Início", datetime.today())
+# Data final = início + 5 dias (máximo disponível no CAMS)
+end_date = start_date + timedelta(days=5)
+st.sidebar.info(f"Data final calculada automaticamente: **{end_date.strftime('%d/%m/%Y')}** (início + 5 dias)")
 
-all_hours  = list(range(0, 24, 3))
-start_hour = st.sidebar.selectbox("Horário Inicial", all_hours,
-                                   format_func=lambda x: f"{x:02d}:00")
-end_hour   = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours) - 1,
-                                   format_func=lambda x: f"{x:02d}:00")
+# MUDANÇA 2: hora de início e hora final removidas — sempre 00 UTC
+# (variável mantida internamente para não quebrar generate_pm_analysis)
+animation_speed = 500  # valor padrão antes do expander
 
 st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
@@ -1361,11 +1290,11 @@ else:
 # ── Botão principal ────────────────────────────────────────────────────────────
 st.markdown("### Iniciar Análise Completa")
 st.markdown(
-    f"Clique no botão abaixo para gerar análise de PM2.5 e PM10 "
+    f"Clique no botão abaixo para gerar previsão de PM2.5 e PM10 "
     f"centralizada em **{city}** com contornos municipais."
 )
 
-if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_width=True):
+if st.button("Gerar Previsão de Qualidade do Ar", type="primary", use_container_width=True):
     try:
         results = generate_pm_analysis()
 
@@ -1600,18 +1529,19 @@ st.markdown("""
 **Sobre os Dados:**
 - Previsões de PM2.5/PM10 geradas pelo modelo CAMS (Copernicus Atmosphere Monitoring Service)
 - Resolução espacial: ~0.4° × 0.4° (aprox. 44 km) · Resolução temporal: 3 horas
+- Referência temporal: 00 UTC · Horizonte: 5 dias (120 h)
 
 **Novidades desta versão:**
 - Contornos municipais destacados nas animações
 - Município selecionado evidenciado em vermelho
 - Relatório automático de Campo Grande às **06h, 12h e 18h** (horário de Campo Grande)
-- Previsão sempre a partir do momento mais recente disponível no CAMS
+- Previsão a partir de 00 UTC do dia selecionado, cobrindo os 5 dias seguintes
 - Regiões com concentração < 1 μg/m³ exibidas em branco
 
 **Dados Fornecidos por:**
 - CAMS (Copernicus Atmosphere Monitoring Service) — União Europeia
 
-**Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
+**Desenvolvido para:** Previsão da Qualidade do Ar em Mato Grosso do Sul
 """)
 
 with st.expander("Suporte e Informações Técnicas"):
@@ -1622,6 +1552,7 @@ with st.expander("Suporte e Informações Técnicas"):
     - Resolução espacial: ~0.4° × 0.4° (≈ 44 km)
     - Resolução temporal: 3 horas
     - Horizonte de previsão: até 120 h (5 dias)
+    - Referência temporal: 00 UTC
     - Relatório automático: Campo Grande às 06h, 12h e 18h (America/Campo_Grande)
     - Keep-alive: ping a cada 5 minutos para manter a página ativa
 

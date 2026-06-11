@@ -892,19 +892,32 @@ def scheduled_report_campo_grande():
     ds = None
 
     try:
+        # leadtime_hour: todos os passos de 3h de 0 a 120 h (cobertura completa de 5 dias)
+        leadtimes_3h = [str(h) for h in range(0, 121, 3)]
+
         request = {
             "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
             "date": f"{start_auto.strftime('%Y-%m-%d')}/{end_auto.strftime('%Y-%m-%d')}",
-            "time": ["00:00"],  # MUDANÇA 2: apenas 00 UTC
-            "leadtime_hour": ["0", "24", "48", "72", "96", "120"],
+            "time": ["00:00"],  # apenas 00 UTC
+            "leadtime_hour": leadtimes_3h,
             "type": ["forecast"],
-            "format": "netcdf",
+            "data_format": "netcdf_zip",   # formato correto para a nova API ADS
             "area": [-17.0, -58.5, -24.5, -50.5],
         }
 
-        filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d_%H%M')}.nc"
+        zip_filename = f"sched_PM_{cidade_auto}_{start_auto.strftime('%Y%m%d_%H%M')}.zip"
+        filename     = zip_filename.replace(".zip", ".nc")
 
-        client.retrieve(dataset, request).download(filename)
+        client.retrieve(dataset, request).download(zip_filename)
+
+        # netcdf_zip retorna um .zip contendo um ou mais .nc — extrair antes de abrir
+        import zipfile as _zipfile
+        with _zipfile.ZipFile(zip_filename, "r") as zf:
+            nc_names = [n for n in zf.namelist() if n.endswith(".nc")]
+            if not nc_names:
+                raise ValueError("Nenhum arquivo .nc encontrado no zip do CAMS")
+            zf.extract(nc_names[0])
+            filename = nc_names[0]
 
         ds = xr.open_dataset(filename)
         variable_names = list(ds.data_vars)
@@ -998,7 +1011,8 @@ def scheduled_report_campo_grande():
         print(f"[Scheduler] Erro: {exc}")
 
     finally:
-        for f in [filename, gif_pm25, gif_pm10]:
+        _cleanup = [locals().get('zip_filename'), locals().get('filename'), gif_pm25, gif_pm10]
+        for f in _cleanup:
             if f and os.path.exists(f):
                 try: os.remove(f)
                 except Exception: pass
@@ -1101,21 +1115,35 @@ def generate_pm_analysis():
 
     city_bounds = {'north': -17.0, 'south': -24.5, 'east': -50.5, 'west': -58.5}
 
+    # leadtime_hour: todos os passos de 3h de 0 a 120 h (cobertura completa de 5 dias)
+    leadtimes_3h = [str(h) for h in range(0, 121, 3)]
+
     request = {
         'variable': ['particulate_matter_2.5um', 'particulate_matter_10um'],
         'date': f'{start_date_str}/{end_date_str}',
         'time': hours,
-        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
+        'leadtime_hour': leadtimes_3h,
         'type': ['forecast'],
-        'format': 'netcdf',
+        'data_format': 'netcdf_zip',   # formato correto para a nova API ADS
         'area': [city_bounds['north'], city_bounds['west'], city_bounds['south'], city_bounds['east']]
     }
 
-    filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.nc'
+    zip_filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.zip'
+    filename     = zip_filename.replace('.zip', '.nc')
 
     try:
         with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS...'):
-            client.retrieve(dataset, request).download(filename)
+            client.retrieve(dataset, request).download(zip_filename)
+
+        # netcdf_zip retorna um .zip — extrair o .nc antes de abrir com xarray
+        import zipfile as _zipfile
+        with _zipfile.ZipFile(zip_filename, 'r') as zf:
+            nc_names = [n for n in zf.namelist() if n.endswith('.nc')]
+            if not nc_names:
+                st.error("Nenhum arquivo .nc encontrado no zip retornado pelo CAMS.")
+                return None
+            zf.extract(nc_names[0])
+            filename = nc_names[0]
 
         ds = xr.open_dataset(filename)
         variable_names = list(ds.data_vars)
@@ -1214,9 +1242,10 @@ def generate_pm_analysis():
         st.write(request)
         return None
     finally:
-        if os.path.exists(filename):
-            try: os.remove(filename)
-            except Exception: pass
+        for _f in [locals().get('zip_filename'), locals().get('filename')]:
+            if _f and os.path.exists(_f):
+                try: os.remove(_f)
+                except Exception: pass
 
 
 # ── Carregamento dos shapes ────────────────────────────────────────────────────

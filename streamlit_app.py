@@ -17,12 +17,12 @@ from matplotlib.path import Path
 from sklearn.linear_model import LinearRegression
 import matplotlib.dates as mdates
 from scipy import stats
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email import encoders
-import base64
+# import smtplib                                    # EMAIL DESATIVADO
+# from email.mime.text import MIMEText              # EMAIL DESATIVADO
+# from email.mime.multipart import MIMEMultipart    # EMAIL DESATIVADO
+# from email.mime.base import MIMEBase              # EMAIL DESATIVADO
+# from email import encoders                        # EMAIL DESATIVADO
+# import base64                                     # EMAIL DESATIVADO
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -33,18 +33,20 @@ import logging
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 # ──────────────────────────────────────────────────────────────────────────────
 
-try:
-    EMAIL_REMETENTE     = st.secrets["email"]["remetente"]
-    EMAIL_SENHA_APP     = st.secrets["email"]["senha_app"]
-    _dest_raw           = st.secrets["email"]["destinatario"]
-    if isinstance(_dest_raw, str):
-        EMAIL_DESTINATARIOS = [e.strip() for e in _dest_raw.split(",") if e.strip()]
-    else:
-        EMAIL_DESTINATARIOS = list(_dest_raw)
-    _email_configurado  = True
-except KeyError:
-    EMAIL_DESTINATARIOS = []
-    _email_configurado  = False
+# try:
+#     EMAIL_REMETENTE     = st.secrets["email"]["remetente"]
+#     EMAIL_SENHA_APP     = st.secrets["email"]["senha_app"]
+#     _dest_raw           = st.secrets["email"]["destinatario"]
+#     if isinstance(_dest_raw, str):
+#         EMAIL_DESTINATARIOS = [e.strip() for e in _dest_raw.split(",") if e.strip()]
+#     else:
+#         EMAIL_DESTINATARIOS = list(_dest_raw)
+#     _email_configurado  = True
+# except KeyError:
+#     EMAIL_DESTINATARIOS = []
+#     _email_configurado  = False
+EMAIL_DESTINATARIOS = []
+_email_configurado  = False
 
 # ── Variáveis globais do scheduler ────────────────────────────────────────────
 _scheduler_log: list = []
@@ -52,408 +54,16 @@ _log_lock = threading.Lock()
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def enviar_relatorio_email(
-    cidade, df_timeseries, df_forecast, top_pollution_df,
-    start_date, end_date,
-    gif_pm25_path=None, gif_pm10_path=None
-):
-    if not _email_configurado:
-        return False
-
-    try:
-        hist = df_timeseries
-        fc   = df_forecast[df_forecast['type'] == 'forecast'] if 'type' in df_forecast.columns else pd.DataFrame()
-
-        if not hist.empty:
-            ultimo       = hist.iloc[-1]
-            curr_pm25    = ultimo['pm25']
-            curr_pm10    = ultimo['pm10']
-            curr_aqi     = ultimo['aqi']
-            curr_cat     = ultimo['aqi_category']
-            curr_color   = ultimo['aqi_color']
-            curr_time    = ultimo['time'].strftime('%d/%m/%Y %H:%M') if hasattr(ultimo['time'], 'strftime') else str(ultimo['time'])
-        else:
-            curr_pm25 = curr_pm10 = curr_aqi = 0
-            curr_cat  = "N/D"
-            curr_color = "gray"
-            curr_time  = "N/D"
-
-        if not fc.empty:
-            idx_max     = fc['aqi'].idxmax()
-            prev_pm25   = fc.loc[idx_max, 'pm25']
-            prev_pm10   = fc.loc[idx_max, 'pm10']
-            prev_aqi    = fc.loc[idx_max, 'aqi']
-            prev_cat    = fc.loc[idx_max, 'aqi_category']
-            prev_color  = fc.loc[idx_max, 'aqi_color']
-            prev_time   = fc.loc[idx_max, 'time']
-            prev_time_s = prev_time.strftime('%d/%m/%Y %H:%M') if hasattr(prev_time, 'strftime') else str(prev_time)
-            aqi_max_periodo = fc['aqi'].max()
-            pm25_med_prev   = fc['pm25'].mean()
-            pm10_med_prev   = fc['pm10'].mean()
-        else:
-            prev_pm25 = prev_pm10 = prev_aqi = 0
-            prev_cat  = "N/D"
-            prev_color = "gray"
-            prev_time_s = "N/D"
-            aqi_max_periodo = 0
-            pm25_med_prev = pm10_med_prev = 0
-
-        def cor_faixa(aqi_val):
-            if aqi_val <= 50:   return "#00c853", "#ffffff"
-            if aqi_val <= 100:  return "#ffd600", "#333333"
-            if aqi_val <= 150:  return "#ff7e00", "#ffffff"
-            if aqi_val <= 200:  return "#ff0000", "#ffffff"
-            if aqi_val <= 300:  return "#8f3f97", "#ffffff"
-            return "#7e0023", "#ffffff"
-
-        cor_h, txt_h = cor_faixa(aqi_max_periodo if aqi_max_periodo > curr_aqi else curr_aqi)
-
-        def recomendacao(aqi_val):
-            if aqi_val <= 50:
-                return "✅ Condições ideais para atividades ao ar livre."
-            if aqi_val <= 100:
-                return "⚠️ Pessoas sensíveis devem considerar limitar esforços prolongados ao ar livre."
-            if aqi_val <= 150:
-                return "⚠️ Grupos sensíveis (crianças, idosos, asmáticos) devem evitar esforços ao ar livre."
-            if aqi_val <= 200:
-                return "🚨 Evite esforços prolongados ao ar livre. Mantenha janelas fechadas."
-            return "🚨 EVITE TODAS as atividades ao ar livre. Procure ambientes com filtração de ar."
-
-        rec_atual  = recomendacao(curr_aqi)
-        rec_prev   = recomendacao(prev_aqi)
-
-        def badge_aqi(aqi_val, cat):
-            bg, tc = cor_faixa(aqi_val)
-            return f"<span style='background:{bg};color:{tc};padding:2px 8px;border-radius:4px;font-weight:bold;font-size:12px;'>{aqi_val:.0f} – {cat}</span>"
-
-        def rows_timeseries(df, tipo_label, cor_tipo):
-            rows = ""
-            for _, r in df.tail(10).iterrows():
-                t = r['time'].strftime('%d/%m %H:%M') if hasattr(r['time'], 'strftime') else str(r['time'])
-                badge = badge_aqi(r['aqi'], r['aqi_category'])
-                rows += (f"<tr>"
-                         f"<td style='padding:6px 10px;border-bottom:1px solid #eee;'>{t}</td>"
-                         f"<td style='padding:6px 10px;border-bottom:1px solid #eee;text-align:center;"
-                         f"color:{cor_tipo};font-weight:bold;'>{tipo_label}</td>"
-                         f"<td style='padding:6px 10px;border-bottom:1px solid #eee;text-align:center;'>{r['pm25']:.1f}</td>"
-                         f"<td style='padding:6px 10px;border-bottom:1px solid #eee;text-align:center;'>{r['pm10']:.1f}</td>"
-                         f"<td style='padding:6px 10px;border-bottom:1px solid #eee;'>{badge}</td>"
-                         f"</tr>")
-            return rows
-
-        rows_hist = rows_timeseries(hist, "Previsto", "#1565c0")
-        rows_prev = rows_timeseries(fc,   "Previsão",  "#e65100") if not fc.empty else ""
-
-        tabela_serie = f"""
-        <h3 style='color:#333;margin-top:28px;border-bottom:2px solid #e0e0e0;padding-bottom:6px;'>
-          📊 Série Temporal — {cidade}
-        </h3>
-        <table style='border-collapse:collapse;width:100%;font-size:13px;'>
-          <thead>
-            <tr style='background:#f5f5f5;'>
-              <th style='padding:8px 10px;text-align:left;'>Data/Hora</th>
-              <th style='padding:8px 10px;'>Tipo</th>
-              <th style='padding:8px 10px;'>PM2.5 (μg/m³)</th>
-              <th style='padding:8px 10px;'>PM10 (μg/m³)</th>
-              <th style='padding:8px 10px;text-align:left;'>IQA</th>
-            </tr>
-          </thead>
-          <tbody>{rows_hist}{rows_prev}</tbody>
-        </table>
-        <p style='font-size:11px;color:#999;margin-top:4px;'>
-          * Dados CAMS: previsões até {end_date.strftime('%d/%m/%Y') if hasattr(end_date, 'strftime') else str(end_date)}
-        </p>"""
-
-        tabela_estadual = ""
-        n_alerta = 0
-        if top_pollution_df is not None and not top_pollution_df.empty:
-            crit_df = top_pollution_df[top_pollution_df['aqi_max'] > 100]
-            n_alerta = len(crit_df)
-            rows_est = ""
-            for _, r in top_pollution_df.head(15).iterrows():
-                bg, tc = cor_faixa(r['aqi_max'])
-                destaque = "font-weight:bold;" if r['aqi_max'] > 150 else ""
-                rows_est += (f"<tr>"
-                             f"<td style='padding:6px 10px;border-bottom:1px solid #eee;{destaque}'>{r['cidade']}</td>"
-                             f"<td style='padding:6px 10px;border-bottom:1px solid #eee;text-align:center;'>{r['pm25_max']:.1f}</td>"
-                             f"<td style='padding:6px 10px;border-bottom:1px solid #eee;text-align:center;'>{r['pm10_max']:.1f}</td>"
-                             f"<td style='padding:6px 10px;border-bottom:1px solid #eee;text-align:center;'>"
-                             f"<span style='background:{bg};color:{tc};padding:2px 8px;border-radius:4px;"
-                             f"font-weight:bold;font-size:12px;'>{r['aqi_max']:.0f}</span></td>"
-                             f"<td style='padding:6px 10px;border-bottom:1px solid #eee;color:{bg};font-weight:bold;'>{r['categoria']}</td>"
-                             f"<td style='padding:6px 10px;border-bottom:1px solid #eee;font-size:12px;color:#555;'>{r['data_max']}</td>"
-                             f"</tr>")
-            tabela_estadual = f"""
-            <h3 style='color:#333;margin-top:32px;border-bottom:2px solid #e0e0e0;padding-bottom:6px;'>
-              🗺️ Ranking Estadual — Municípios em Alerta (Top 15)
-            </h3>
-            <table style='border-collapse:collapse;width:100%;font-size:13px;'>
-              <thead>
-                <tr style='background:#f5f5f5;'>
-                  <th style='padding:8px 10px;text-align:left;'>Município</th>
-                  <th style='padding:8px 10px;'>PM2.5 Máx</th>
-                  <th style='padding:8px 10px;'>PM10 Máx</th>
-                  <th style='padding:8px 10px;'>IQA Máx</th>
-                  <th style='padding:8px 10px;text-align:left;'>Categoria</th>
-                  <th style='padding:8px 10px;text-align:left;'>Data Crítica</th>
-                </tr>
-              </thead>
-              <tbody>{rows_est}</tbody>
-            </table>"""
-
-        def card(titulo, valor, unidade, cor_borda):
-            return (f"<div style='flex:1;min-width:130px;background:#fff;border-radius:10px;"
-                    f"border-left:5px solid {cor_borda};padding:14px 16px;box-shadow:0 1px 6px rgba(0,0,0,.08);'>"
-                    f"<div style='font-size:12px;color:#777;'>{titulo}</div>"
-                    f"<div style='font-size:22px;font-weight:bold;color:#222;'>{valor}"
-                    f"<span style='font-size:12px;color:#999;margin-left:3px;'>{unidade}</span></div>"
-                    f"</div>")
-
-        cards_atual = (
-            card("PM2.5 Previsto",      f"{curr_pm25:.1f}", "μg/m³", "#1565c0") +
-            card("PM10 Previsto",       f"{curr_pm10:.1f}", "μg/m³", "#6d4c41") +
-            card("IQA Atual",           f"{curr_aqi:.0f}",  "",       cor_h) +
-            card("PM2.5 Prev. Máx",     f"{prev_pm25:.1f}", "μg/m³", "#e65100") +
-            card("PM10 Prev. Máx",      f"{prev_pm10:.1f}", "μg/m³", "#bf360c") +
-            card("IQA Prev. Máx",       f"{prev_aqi:.0f}",  "",       cor_h)
-        )
-
-        end_date_str = end_date.strftime('%d/%m/%Y') if hasattr(end_date, 'strftime') else str(end_date)
-        start_date_str = start_date.strftime('%d/%m/%Y') if hasattr(start_date, 'strftime') else str(start_date)
-
-        assunto = (f"📋 Relatório Qualidade do Ar — {cidade} | "
-                   f"{start_date_str} → {end_date_str}")
-
-        alerta_header = ""
-        if aqi_max_periodo > 100:
-            alerta_header = f"""
-            <div style='background:#fff3cd;border-left:5px solid #ff9800;padding:14px 18px;
-                        border-radius:6px;margin-bottom:20px;'>
-              <strong>🚨 ATENÇÃO:</strong> IQA previsto máximo de <strong>{aqi_max_periodo:.0f}</strong>
-              em <strong>{cidade}</strong> até {end_date_str} —
-              categoria <strong>{prev_cat}</strong>.<br>
-              {rec_prev}
-            </div>"""
-
-        gif_aviso = ""
-        if gif_pm25_path or gif_pm10_path:
-            gif_aviso = "<p style='color:#1565c0;font-size:13px;'>📎 Animações GIF anexadas a este e-mail.</p>"
-
-        html = f"""
-        <html>
-        <body style='font-family:Arial,sans-serif;background:#f0f2f5;padding:20px;margin:0;'>
-          <div style='max-width:720px;margin:auto;background:#fff;border-radius:14px;
-                      box-shadow:0 4px 18px rgba(0,0,0,.12);overflow:hidden;'>
-
-            <div style='background:{cor_h};padding:32px 36px;text-align:center;'>
-              <h1 style='color:{txt_h};margin:0;font-size:26px;letter-spacing:.5px;'>
-                🌍 Relatório de Qualidade do Ar
-              </h1>
-              <p style='color:{txt_h};margin:8px 0 0;font-size:15px;opacity:.92;'>
-                Mato Grosso do Sul — Monitor PM2.5 / PM10 (CAMS)
-              </p>
-            </div>
-
-            <div style='padding:32px 36px;'>
-
-              <table style='width:100%;margin-bottom:20px;'>
-                <tr>
-                  <td style='font-size:14px;color:#555;'>
-                    <strong>Município:</strong> {cidade}<br>
-                    <strong>Período:</strong> {start_date_str} → {end_date_str}<br>
-                    <strong>Referência temporal:</strong> {curr_time}
-                  </td>
-                  <td style='text-align:right;'>
-                    <div style='background:{cor_h};color:{txt_h};padding:10px 18px;border-radius:8px;
-                                display:inline-block;font-size:13px;'>
-                      <strong>Categoria atual:</strong><br>
-                      <span style='font-size:18px;font-weight:bold;'>{curr_cat}</span>
-                    </div>
-                  </td>
-                </tr>
-              </table>
-
-              {alerta_header}
-
-              <div style='display:flex;flex-wrap:wrap;gap:10px;margin-bottom:24px;'>
-                {cards_atual}
-              </div>
-
-              <div style='background:#e8f5e9;border-left:4px solid #43a047;
-                          padding:12px 16px;border-radius:6px;margin-bottom:8px;font-size:13px;'>
-                <strong>Condição prevista atual:</strong> {rec_atual}
-              </div>
-              <div style='background:#fff8e1;border-left:4px solid #ffa000;
-                          padding:12px 16px;border-radius:6px;margin-bottom:24px;font-size:13px;'>
-                <strong>Previsão (pior momento — {prev_time_s}):</strong> {rec_prev}
-              </div>
-
-              <h3 style='color:#333;border-bottom:2px solid #e0e0e0;padding-bottom:6px;margin-top:0;'>
-                📏 Comparação com Padrões OMS (24h)
-              </h3>
-              <table style='width:100%;font-size:13px;margin-bottom:24px;'>
-                <tr>
-                  <td style='padding:6px 0;color:#555;'>PM2.5 previsto</td>
-                  <td style='padding:6px 0;'>
-                    <div style='background:#e0e0e0;border-radius:6px;height:14px;width:100%;position:relative;'>
-                      <div style='background:#1565c0;border-radius:6px;height:14px;
-                                  width:{min(curr_pm25/25*100,100):.0f}%;'></div>
-                    </div>
-                  </td>
-                  <td style='padding:6px 0 6px 10px;white-space:nowrap;color:#222;font-weight:bold;'>
-                    {curr_pm25:.1f} / 25 μg/m³
-                  </td>
-                </tr>
-                <tr>
-                  <td style='padding:6px 0;color:#555;'>PM10 previsto</td>
-                  <td style='padding:6px 0;'>
-                    <div style='background:#e0e0e0;border-radius:6px;height:14px;width:100%;'>
-                      <div style='background:#6d4c41;border-radius:6px;height:14px;
-                                  width:{min(curr_pm10/50*100,100):.0f}%;'></div>
-                    </div>
-                  </td>
-                  <td style='padding:6px 0 6px 10px;white-space:nowrap;color:#222;font-weight:bold;'>
-                    {curr_pm10:.1f} / 50 μg/m³
-                  </td>
-                </tr>
-                <tr>
-                  <td style='padding:6px 0;color:#555;'>PM2.5 prev. máx</td>
-                  <td style='padding:6px 0;'>
-                    <div style='background:#e0e0e0;border-radius:6px;height:14px;width:100%;'>
-                      <div style='background:#e65100;border-radius:6px;height:14px;
-                                  width:{min(prev_pm25/25*100,100):.0f}%;'></div>
-                    </div>
-                  </td>
-                  <td style='padding:6px 0 6px 10px;white-space:nowrap;color:#222;font-weight:bold;'>
-                    {prev_pm25:.1f} / 25 μg/m³
-                  </td>
-                </tr>
-                <tr>
-                  <td style='padding:6px 0;color:#555;'>PM10 prev. máx</td>
-                  <td style='padding:6px 0;'>
-                    <div style='background:#e0e0e0;border-radius:6px;height:14px;width:100%;'>
-                      <div style='background:#bf360c;border-radius:6px;height:14px;
-                                  width:{min(prev_pm10/50*100,100):.0f}%;'></div>
-                    </div>
-                  </td>
-                  <td style='padding:6px 0 6px 10px;white-space:nowrap;color:#222;font-weight:bold;'>
-                    {prev_pm10:.1f} / 50 μg/m³
-                  </td>
-                </tr>
-              </table>
-
-              <h3 style='color:#333;border-bottom:2px solid #e0e0e0;padding-bottom:6px;'>
-                🎨 Escala do Índice de Qualidade do Ar (IQA)
-              </h3>
-              <table style='border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px;'>
-                <tr>
-                  <td style='background:#00e400;color:#333;padding:5px 10px;border-radius:4px 0 0 4px;font-weight:bold;'>0–50</td>
-                  <td style='padding:5px 10px;border-bottom:1px solid #f0f0f0;'>Boa — Atividades ao ar livre sem restrições</td>
-                </tr>
-                <tr>
-                  <td style='background:#ffd600;color:#333;padding:5px 10px;font-weight:bold;'>51–100</td>
-                  <td style='padding:5px 10px;border-bottom:1px solid #f0f0f0;'>Moderada — Sensíveis devem limitar esforços</td>
-                </tr>
-                <tr>
-                  <td style='background:#ff7e00;color:#fff;padding:5px 10px;font-weight:bold;'>101–150</td>
-                  <td style='padding:5px 10px;border-bottom:1px solid #f0f0f0;'>Insalubre para Grupos Sensíveis</td>
-                </tr>
-                <tr>
-                  <td style='background:#ff0000;color:#fff;padding:5px 10px;font-weight:bold;'>151–200</td>
-                  <td style='padding:5px 10px;border-bottom:1px solid #f0f0f0;'>Insalubre — Evite esforços ao ar livre</td>
-                </tr>
-                <tr>
-                  <td style='background:#8f3f97;color:#fff;padding:5px 10px;font-weight:bold;'>201–300</td>
-                  <td style='padding:5px 10px;border-bottom:1px solid #f0f0f0;'>Muito Insalubre</td>
-                </tr>
-                <tr>
-                  <td style='background:#7e0023;color:#fff;padding:5px 10px;border-radius:0 0 0 4px;font-weight:bold;'>&gt;300</td>
-                  <td style='padding:5px 10px;'>Perigosa — Evite TODAS as atividades ao ar livre</td>
-                </tr>
-              </table>
-
-              {tabela_serie}
-              {tabela_estadual}
-
-              {"" if fc.empty else f"""
-              <h3 style='color:#333;margin-top:28px;border-bottom:2px solid #e0e0e0;padding-bottom:6px;'>
-                📈 Estatísticas do Período de Previsão
-              </h3>
-              <table style='border-collapse:collapse;width:100%;font-size:13px;margin-bottom:20px;'>
-                <tr style='background:#f5f5f5;'>
-                  <th style='padding:8px 12px;text-align:left;'>Indicador</th>
-                  <th style='padding:8px 12px;'>PM2.5</th>
-                  <th style='padding:8px 12px;'>PM10</th>
-                  <th style='padding:8px 12px;'>IQA</th>
-                </tr>
-                <tr>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;'>Mínimo</td>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;text-align:center;'>{fc['pm25'].min():.1f} μg/m³</td>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;text-align:center;'>{fc['pm10'].min():.1f} μg/m³</td>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;text-align:center;'>{fc['aqi'].min():.0f}</td>
-                </tr>
-                <tr>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;'>Médio</td>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;text-align:center;'>{fc['pm25'].mean():.1f} μg/m³</td>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;text-align:center;'>{fc['pm10'].mean():.1f} μg/m³</td>
-                  <td style='padding:7px 12px;border-bottom:1px solid #eee;text-align:center;'>{fc['aqi'].mean():.0f}</td>
-                </tr>
-                <tr>
-                  <td style='padding:7px 12px;'>Máximo</td>
-                  <td style='padding:7px 12px;text-align:center;font-weight:bold;color:#e65100;'>{fc['pm25'].max():.1f} μg/m³</td>
-                  <td style='padding:7px 12px;text-align:center;font-weight:bold;color:#bf360c;'>{fc['pm10'].max():.1f} μg/m³</td>
-                  <td style='padding:7px 12px;text-align:center;font-weight:bold;'>{fc['aqi'].max():.0f}</td>
-                </tr>
-              </table>"""}
-
-              {gif_aviso}
-
-              {"" if n_alerta == 0 else f"""
-              <div style='background:#ffebee;border-left:5px solid #c62828;padding:14px 18px;
-                          border-radius:6px;margin-top:20px;font-size:13px;'>
-                <strong>⚠️ Alerta Estadual:</strong> {n_alerta} município(s) com IQA previsto acima de 100
-                até {end_date_str} em Mato Grosso do Sul.
-              </div>"""}
-
-              <p style='color:#bbb;font-size:11px;margin-top:32px;border-top:1px solid #eee;
-                        padding-top:14px;text-align:center;'>
-                Relatório gerado automaticamente pelo <strong>Monitor PM2.5/PM10 — MS</strong>.<br>
-                Dados: CAMS (Copernicus Atmosphere Monitoring Service) ·
-                {datetime.now().strftime("%d/%m/%Y %H:%M")}<br>
-                Resolução espacial: ~0.4° × 0.4° · Temporal: 3h
-              </p>
-            </div>
-          </div>
-        </body>
-        </html>"""
-
-        msg            = MIMEMultipart("mixed")
-        msg["Subject"] = assunto
-        msg["From"]    = EMAIL_REMETENTE
-        msg["To"]      = ", ".join(EMAIL_DESTINATARIOS)
-
-        alt_part = MIMEMultipart("alternative")
-        alt_part.attach(MIMEText(html, "html"))
-        msg.attach(alt_part)
-
-        for gif_path, label in [(gif_pm25_path, "PM25"), (gif_pm10_path, "PM10")]:
-            if gif_path and os.path.exists(gif_path):
-                with open(gif_path, "rb") as f:
-                    part = MIMEBase("image", "gif")
-                    part.set_payload(f.read())
-                    encoders.encode_base64(part)
-                    part.add_header("Content-Disposition", "attachment",
-                                    filename=f"Animacao_{label}_{cidade}_{start_date.strftime('%Y%m%d') if hasattr(start_date,'strftime') else str(start_date)}.gif")
-                    msg.attach(part)
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as srv:
-            srv.login(EMAIL_REMETENTE, EMAIL_SENHA_APP)
-            srv.sendmail(EMAIL_REMETENTE, EMAIL_DESTINATARIOS, msg.as_string())
-        return True
-
-    except Exception as e:
-        print(f"Erro ao enviar e-mail: {e}")
-        return False
+# def enviar_relatorio_email(
+#     cidade, df_timeseries, df_forecast, top_pollution_df,
+#     start_date, end_date,
+#     gif_pm25_path=None, gif_pm10_path=None
+# ):
+#     """Envio de e-mail desativado."""
+#     return False
+def enviar_relatorio_email(*args, **kwargs):
+    """Envio de e-mail desativado."""
+    return False
 
 
 def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, start_date, pm_type="PM2.5"):
@@ -682,7 +292,7 @@ def calculate_aqi(pm25, pm10):
 
     aqi = max(calc_sub_index(pm25, pm25_breakpoints), calc_sub_index(pm10, pm10_breakpoints))
 
-    if aqi <= 50:   return aqi, "Boa", "green"
+    if aqi <= 50:    return aqi, "Boa", "green"
     elif aqi <= 100: return aqi, "Moderada", "yellow"
     elif aqi <= 150: return aqi, "Insalubre para Grupos Sensíveis", "orange"
     elif aqi <= 200: return aqi, "Insalubre", "red"
@@ -691,15 +301,14 @@ def calculate_aqi(pm25, pm10):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORREÇÃO PRINCIPAL: predict_future_values
-# Problema original: max_date chegava como datetime.date (do st.date_input),
-# mas o código chamava .replace(hour=23, ...) que só existe em datetime.datetime,
-# fazendo max_dt ficar incorreto e o filtro de datas falhar silenciosamente.
+# predict_future_values — sem truncamento por data final
+# A previsão CAMS já cobre 5 dias (120 h) a partir da data inicial;
+# não faz sentido cortar por end_date, pois só existe start_date agora.
 # ══════════════════════════════════════════════════════════════════════════════
-def predict_future_values(df, days=5, max_date=None):
+def predict_future_values(df, days=5):
     """
-    Gera previsões por regressão linear respeitando estritamente max_date.
-    Aceita max_date como datetime.date, datetime.datetime ou pd.Timestamp.
+    Gera previsões por regressão linear para os próximos `days` dias
+    a partir do último ponto da série histórica, sem limite de data final.
     """
     if len(df) < 3:
         return pd.DataFrame(columns=['time', 'pm25', 'pm10', 'aqi', 'aqi_category', 'aqi_color', 'type'])
@@ -725,28 +334,10 @@ def predict_future_values(df, days=5, max_date=None):
 
     last_time = df_hist['time'].max()
 
-    # ── CORREÇÃO: converte max_date para pd.Timestamp independentemente do tipo ──
-    if max_date is not None:
-        if isinstance(max_date, pd.Timestamp):
-            # Já é Timestamp — apenas fixa horário no fim do dia
-            max_dt = max_date.replace(hour=23, minute=59, second=59)
-        elif isinstance(max_date, datetime):
-            # datetime.datetime — converte direto
-            max_dt = pd.Timestamp(max_date).replace(hour=23, minute=59, second=59)
-        else:
-            # datetime.date (vindo do st.date_input) — constrói datetime explicitamente
-            max_dt = pd.Timestamp(
-                datetime(max_date.year, max_date.month, max_date.day, 23, 59, 59)
-            )
-    else:
-        max_dt = None
-    # ──────────────────────────────────────────────────────────────────────────
-
-    # Gera candidatos e filtra pelo limite máximo em uma única compreensão
+    # Gera pontos a cada 6 h para os próximos `days` dias (sem corte por data)
     future_times = [
         last_time + timedelta(hours=i * 6)
         for i in range(1, days * 4 + 1)
-        if (max_dt is None or last_time + timedelta(hours=i * 6) <= max_dt)
     ]
 
     if not future_times:
@@ -786,7 +377,7 @@ def predict_future_values(df, days=5, max_date=None):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
+def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
     cities_results = []
     progress_bar = st.progress(0)
     status_text  = st.empty()
@@ -799,7 +390,8 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, end_date=None):
         df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)
 
         if not df_timeseries.empty:
-            df_forecast  = predict_future_values(df_timeseries, days=5, max_date=end_date)
+            # Sem max_date — pega tudo o que o CAMS forneceu
+            df_forecast  = predict_future_values(df_timeseries, days=5)
             forecast_only = df_forecast[df_forecast['type'] == 'forecast']
 
             if not forecast_only.empty:
@@ -921,14 +513,14 @@ def keep_alive():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CORREÇÃO: scheduled_report_campo_grande
-# end_auto agora termina às 23:59:59 do último dia (não às HH:00 do executor),
-# evitando que candidatos de 00h do dia seguinte passem pelo filtro.
+# scheduled_report_campo_grande — e-mail desativado, mantém apenas a lógica
+# de geração de dados e log para eventual reativação futura.
 # ══════════════════════════════════════════════════════════════════════════════
 def scheduled_report_campo_grande():
     """
     Busca sempre a previsão a partir do momento atual (horário mais recente).
     Executa às 06h, 12h e 18h (horário de Campo Grande).
+    O envio de e-mail está desativado; o log é mantido para monitoramento.
     """
     cidade_auto        = "Campo Grande"
     lat_auto, lon_auto = cities[cidade_auto]
@@ -937,8 +529,8 @@ def scheduled_report_campo_grande():
     hora_ref = (agora.hour // 3) * 3
     start_auto = agora.replace(hour=hora_ref, minute=0, second=0, microsecond=0)
 
-    # CORREÇÃO: fixa o fim exatamente em 23:59:59 do último dia do período
-    end_auto = (start_auto + timedelta(days=5)).replace(hour=23, minute=59, second=59)
+    # Fim = start + 5 dias completos (o CAMS disponibiliza até 120 h)
+    end_auto = start_auto + timedelta(days=5)
 
     dataset = "cams-global-atmospheric-composition-forecasts"
 
@@ -960,7 +552,8 @@ def scheduled_report_campo_grande():
             "variable": ["particulate_matter_2.5um", "particulate_matter_10um"],
             "date": f"{start_auto.strftime('%Y-%m-%d')}/{end_auto.strftime('%Y-%m-%d')}",
             "time": [f"{h:02d}:00" for h in range(0, 24, 3)],
-            "leadtime_hour": ["0", "24", "48", "72", "96", "120"],
+            # Todos os leadtimes disponíveis no CAMS (0–120 h, a cada 3 h)
+            "leadtime_hour": [str(h) for h in range(0, 121, 3)],
             "type": ["forecast"],
             "format": "netcdf",
             "area": [-17.0, -58.5, -24.5, -50.5],
@@ -979,7 +572,8 @@ def scheduled_report_campo_grande():
             raise ValueError("Variáveis PM não encontradas no dataset CAMS")
 
         df_ts  = extract_pm_timeseries(ds, lat_auto, lon_auto, pm25_var, pm10_var)
-        df_fct = predict_future_values(df_ts, days=5, max_date=end_auto)
+        # Sem max_date — usa tudo o que o CAMS entregou
+        df_fct = predict_future_values(df_ts, days=5)
 
         for var in [pm25_var, pm10_var]:
             max_val = float(ds[var].max().values)
@@ -997,7 +591,7 @@ def scheduled_report_campo_grande():
                 lat_c, lon_c = coords
                 df_c = extract_pm_timeseries(ds, lat_c, lon_c, pm25_var, pm10_var)
                 if not df_c.empty:
-                    df_fc   = predict_future_values(df_c, days=5, max_date=end_auto)
+                    df_fc   = predict_future_values(df_c, days=5)
                     fc_only = df_fc[df_fc["type"] == "forecast"]
                     if not fc_only.empty:
                         idx_mx = fc_only["aqi"].idxmax()
@@ -1021,10 +615,7 @@ def scheduled_report_campo_grande():
 
         ms_shapes_sched = load_ms_municipalities()
 
-        for pm_var, pm_type, gif_attr in [
-            (pm25_var, "PM2.5", "gif_pm25"),
-            (pm10_var, "PM10",  "gif_pm10")
-        ]:
+        for pm_var, pm_type in [(pm25_var, "PM2.5"), (pm10_var, "PM10")]:
             anim_result = create_pm_animation(
                 ds, pm_var, cidade_auto, lat_auto, lon_auto,
                 ms_shapes_sched, start_auto, pm_type
@@ -1041,19 +632,12 @@ def scheduled_report_campo_grande():
                 else:
                     gif_pm10 = gif_path
 
-        ok = enviar_relatorio_email(
-            cidade=cidade_auto,
-            df_timeseries=df_ts,
-            df_forecast=df_fct,
-            top_pollution_df=top_df,
-            start_date=start_auto,
-            end_date=end_auto,
-            gif_pm25_path=gif_pm25,
-            gif_pm10_path=gif_pm10,
-        )
+        # ── E-mail desativado ──────────────────────────────────────────────
+        # enviar_relatorio_email(...)
+        # ──────────────────────────────────────────────────────────────────
 
         pm25_max_str = f"{df_ts['pm25'].max():.1f} μg/m³" if not df_ts.empty else "N/D"
-        log_entry["status"]  = "✅ concluído" if ok else "⚠️ gerado, sem e-mail"
+        log_entry["status"]  = "✅ concluído (sem e-mail)"
         log_entry["detalhe"] = f"Ref: {start_auto.strftime('%d/%m %H:%M')} | PM2.5 máx: {pm25_max_str}"
 
     except Exception as exc:
@@ -1073,7 +657,7 @@ def scheduled_report_campo_grande():
 
 
 # ── Configuração da página ─────────────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="Monitor PM2.5/PM10 - MS", page_icon="🌍")
+st.set_page_config(layout="wide", page_title="Sistema de Previsão PM2.5/PM10 - MS", page_icon="🌍")
 
 
 # ── Inicializa o scheduler UMA ÚNICA VEZ por processo ─────────────────────────
@@ -1135,20 +719,20 @@ def load_ms_municipalities():
 
 
 # ── Interface principal ────────────────────────────────────────────────────────
-st.title("🌍 Monitoramento PM2.5 e PM10 - Mato Grosso do Sul")
+st.title("🌍 Sistema de Previsão PM2.5 e PM10 - Mato Grosso do Sul")
 st.markdown("""
-### Sistema Integrado de Monitoramento da Qualidade do Ar
+### Sistema Integrado de Previsão da Qualidade do Ar
 
 Este aplicativo apresenta as previsões de concentrações de Material Particulado (PM2.5 e PM10)
 para todos os municípios de Mato Grosso do Sul usando dados do modelo CAMS.
 
 **Características desta versão:**
-- Previsões de PM2.5 e PM10 do modelo CAMS (Copernicus)
+- Previsões de PM2.5 e PM10 do modelo CAMS (Copernicus) — horizonte de 5 dias (120 h)
 - Visualização centralizada no município selecionado com contornos municipais
 - Animações temporais para PM2.5 e PM10
 - Índice de Qualidade do Ar (IQA) calculado
-- Previsões limitadas à data final selecionada
-- Relatório automático de Campo Grande enviado às **06h, 12h e 18h** por e-mail
+- Basta informar a **data de início** — o modelo busca automaticamente os 5 dias seguintes
+- Execução automática de Campo Grande às **06h, 12h e 18h**
 """)
 
 
@@ -1156,37 +740,29 @@ def generate_pm_analysis():
     dataset = "cams-global-atmospheric-composition-forecasts"
 
     start_date_str = start_date.strftime('%Y-%m-%d')
-    end_date_str   = end_date.strftime('%Y-%m-%d')
+    # Data final = start + 5 dias (máximo disponível no CAMS)
+    end_date_auto  = start_date + timedelta(days=5)
+    end_date_str   = end_date_auto.strftime('%Y-%m-%d')
 
-    hours = []
-    current_hour = start_hour
-    while True:
-        hours.append(f"{current_hour:02d}:00")
-        if current_hour == end_hour:
-            break
-        current_hour = (current_hour + 3) % 24
-        if current_hour == start_hour:
-            break
-
-    if not hours:
-        hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']
+    # Todos os leadtimes do CAMS (0 a 120 h, passo de 3 h)
+    leadtime_hours = [str(h) for h in range(0, 121, 3)]
 
     city_bounds = {'north': -17.0, 'south': -24.5, 'east': -50.5, 'west': -58.5}
 
     request = {
         'variable': ['particulate_matter_2.5um', 'particulate_matter_10um'],
         'date': f'{start_date_str}/{end_date_str}',
-        'time': hours,
-        'leadtime_hour': ['0', '24', '48', '72', '96', '120'],
+        'time': ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'],
+        'leadtime_hour': leadtime_hours,
         'type': ['forecast'],
         'format': 'netcdf',
         'area': [city_bounds['north'], city_bounds['west'], city_bounds['south'], city_bounds['east']]
     }
 
-    filename = f'PM25_PM10_{city}_{start_date}_to_{end_date}.nc'
+    filename = f'PM25_PM10_{city}_{start_date_str}.nc'
 
     try:
-        with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS...'):
+        with st.spinner('Baixando previsões de PM2.5 e PM10 do CAMS (0–120 h)...'):
             client.retrieve(dataset, request).download(filename)
 
         ds = xr.open_dataset(filename)
@@ -1207,7 +783,8 @@ def generate_pm_analysis():
             return None
 
         with st.spinner("Gerando previsões estendidas..."):
-            df_forecast = predict_future_values(df_timeseries, days=5, max_date=end_date)
+            # Sem corte por data final — usa todo o horizonte disponível
+            df_forecast = predict_future_values(df_timeseries, days=5)
 
         with st.spinner('Criando animação de PM2.5...'):
             animation_result = create_pm_animation(
@@ -1218,7 +795,7 @@ def generate_pm_analysis():
             fig_pm25, animate_pm25, frames_pm25 = animation_result
             ani_pm25 = animation.FuncAnimation(fig_pm25, animate_pm25, frames=frames_pm25,
                                                interval=animation_speed, blit=True)
-            gif_filename_pm25 = f'PM25_{city}_{start_date}_to_{end_date}.gif'
+            gif_filename_pm25 = f'PM25_{city}_{start_date_str}.gif'
             ani_pm25.save(gif_filename_pm25, writer=animation.PillowWriter(fps=2))
             plt.close(fig_pm25)
 
@@ -1232,7 +809,7 @@ def generate_pm_analysis():
                     fig_pm10, animate_pm10, frames_pm10 = animation_result_pm10
                     ani_pm10 = animation.FuncAnimation(fig_pm10, animate_pm10, frames=frames_pm10,
                                                        interval=animation_speed, blit=True)
-                    gif_filename_pm10 = f'PM10_{city}_{start_date}_to_{end_date}.gif'
+                    gif_filename_pm10 = f'PM10_{city}_{start_date_str}.gif'
                     ani_pm10.save(gif_filename_pm10, writer=animation.PillowWriter(fps=2))
                     plt.close(fig_pm10)
 
@@ -1248,26 +825,20 @@ def generate_pm_analysis():
                     ds[var] = ds[var] / 1000
 
             with st.spinner("Analisando qualidade do ar em todos os municípios de MS..."):
-                top_pollution_cities = analyze_all_cities(ds, pm25_var, pm10_var, cities, end_date=end_date)
+                # Sem end_date — usa tudo o que o CAMS forneceu
+                top_pollution_cities = analyze_all_cities(ds, pm25_var, pm10_var, cities)
         except Exception as e:
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
             top_pollution_cities = pd.DataFrame(
                 columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria']
             )
 
-        try:
-            enviar_relatorio_email(
-                cidade=city,
-                df_timeseries=df_timeseries,
-                df_forecast=df_forecast,
-                top_pollution_df=top_pollution_cities,
-                start_date=start_date,
-                end_date=end_date,
-                gif_pm25_path=gif_filename_pm25,
-                gif_pm10_path=gif_filename_pm10
-            )
-        except Exception:
-            pass
+        # ── E-mail desativado ──────────────────────────────────────────────
+        # try:
+        #     enviar_relatorio_email(...)
+        # except Exception:
+        #     pass
+        # ──────────────────────────────────────────────────────────────────
 
         return {
             'animation_pm25':  gif_filename_pm25,
@@ -1277,7 +848,8 @@ def generate_pm_analysis():
             'dataset':         ds,
             'pm25_var':        pm25_var,
             'pm10_var':        pm10_var,
-            'top_pollution':   top_pollution_cities
+            'top_pollution':   top_pollution_cities,
+            'end_date_auto':   end_date_auto,
         }
 
     except Exception as e:
@@ -1308,14 +880,13 @@ city = st.sidebar.selectbox("Selecione o município para análise detalhada",
 lat_center, lon_center = cities[city]
 
 st.sidebar.subheader("Período de Análise")
-start_date = st.sidebar.date_input("Data de Início", datetime.today() - timedelta(days=2))
-end_date   = st.sidebar.date_input("Data Final",     datetime.today() + timedelta(days=5))
-
-all_hours  = list(range(0, 24, 3))
-start_hour = st.sidebar.selectbox("Horário Inicial", all_hours,
-                                   format_func=lambda x: f"{x:02d}:00")
-end_hour   = st.sidebar.selectbox("Horário Final", all_hours, index=len(all_hours) - 1,
-                                   format_func=lambda x: f"{x:02d}:00")
+start_date = st.sidebar.date_input("Data de Início", datetime.today())
+# Data final é calculada automaticamente: início + 5 dias (máximo do CAMS)
+end_date_preview = start_date + timedelta(days=5)
+st.sidebar.info(
+    f"📅 Previsão automática até **{end_date_preview.strftime('%d/%m/%Y')}** "
+    f"(5 dias / 120 h a partir da data de início)"
+)
 
 st.sidebar.subheader("Opções Avançadas")
 with st.sidebar.expander("Configurações da Visualização"):
@@ -1329,7 +900,7 @@ st.sidebar.info(
 
 # ── Painel do scheduler na sidebar ────────────────────────────────────────────
 st.sidebar.markdown("---")
-st.sidebar.subheader("🕐 Relatório Automático")
+st.sidebar.subheader("🕐 Execução Automática")
 
 if "scheduler_obj" in st.session_state:
     _sched_ref = st.session_state["scheduler_obj"]
@@ -1361,15 +932,18 @@ else:
 # ── Botão principal ────────────────────────────────────────────────────────────
 st.markdown("### Iniciar Análise Completa")
 st.markdown(
-    f"Clique no botão abaixo para gerar análise de PM2.5 e PM10 "
-    f"centralizada em **{city}** com contornos municipais."
+    f"Clique no botão abaixo para gerar a previsão de PM2.5 e PM10 "
+    f"centralizada em **{city}** — de **{start_date.strftime('%d/%m/%Y')}** "
+    f"até **{end_date_preview.strftime('%d/%m/%Y')}** (5 dias)."
 )
 
-if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_width=True):
+if st.button("Gerar Previsão de Qualidade do Ar", type="primary", use_container_width=True):
     try:
         results = generate_pm_analysis()
 
         if results:
+            end_date_auto = results['end_date_auto']
+
             tab1, tab2, tab3 = st.tabs([
                 "Análise do Município",
                 "Alerta de Qualidade do Ar",
@@ -1381,24 +955,24 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                 st.markdown("### Evolução Temporal - PM2.5 (Previsto CAMS)")
                 if os.path.exists(results['animation_pm25']):
                     st.image(results['animation_pm25'],
-                             caption=f"Previsão temporal do PM2.5 em {city} ({start_date} a {end_date})")
+                             caption=f"Previsão temporal do PM2.5 em {city} ({start_date} a {end_date_auto.date()})")
                     with open(results['animation_pm25'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM2.5 (GIF)",
                             data=file,
-                            file_name=f"PM25_{city}_{start_date}_to_{end_date}.gif",
+                            file_name=f"PM25_{city}_{start_date}.gif",
                             mime="image/gif"
                         )
 
                 if results['animation_pm10'] and os.path.exists(results['animation_pm10']):
                     st.markdown("### Evolução Temporal - PM10 (Previsto CAMS)")
                     st.image(results['animation_pm10'],
-                             caption=f"Previsão temporal do PM10 em {city} ({start_date} a {end_date})")
+                             caption=f"Previsão temporal do PM10 em {city} ({start_date} a {end_date_auto.date()})")
                     with open(results['animation_pm10'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM10 (GIF)",
                             data=file,
-                            file_name=f"PM10_{city}_{start_date}_to_{end_date}.gif",
+                            file_name=f"PM10_{city}_{start_date}.gif",
                             mime="image/gif"
                         )
 
@@ -1506,7 +1080,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     st.download_button(
                         label="Baixar Dados Completos (CSV)",
                         data=csv,
-                        file_name=f"PM_data_{city}_{start_date}_to_{end_date}.csv",
+                        file_name=f"PM_data_{city}_{start_date}.csv",
                         mime="text/csv",
                     )
 
@@ -1527,7 +1101,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                         st.error(f"""
                         ### ALERTA DE QUALIDADE DO AR
                         **{len(critical_cities)} municípios** com previsão de qualidade do ar
-                        inadequada até {end_date.strftime('%d/%m/%Y')}!
+                        inadequada até {end_date_auto.strftime('%d/%m/%Y')}!
 
                         Municípios mais críticos:
                         1. **{top_cities.iloc[0]['cidade']}**: IQA {top_cities.iloc[0]['aqi_max']:.0f} — PM2.5: {top_cities.iloc[0]['pm25_max']:.1f} μg/m³
@@ -1558,7 +1132,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     ax.set_ylabel('Concentração (μg/m³)', fontsize=12)
                     ax.set_title(
                         'PM2.5 e PM10 Máximos Previstos até '
-                        + end_date.strftime('%d/%m/%Y') + ' (CAMS)', fontsize=14
+                        + end_date_auto.strftime('%d/%m/%Y') + ' (CAMS)', fontsize=14
                     )
                     ax.axhline(y=25, color='orange', linestyle='--', alpha=0.7,
                                label='Limite PM2.5 OMS (25 μg/m³)')
@@ -1580,7 +1154,7 @@ if st.button("Gerar Análise de Qualidade do Ar", type="primary", use_container_
                     st.download_button(
                         label="Baixar Dados de Alerta (CSV)",
                         data=csv_alert,
-                        file_name=f"Alerta_Qualidade_Ar_MS_{start_date}_to_{end_date}.csv",
+                        file_name=f"Alerta_Qualidade_Ar_MS_{start_date}.csv",
                         mime="text/csv",
                     )
                 else:
@@ -1600,18 +1174,20 @@ st.markdown("""
 **Sobre os Dados:**
 - Previsões de PM2.5/PM10 geradas pelo modelo CAMS (Copernicus Atmosphere Monitoring Service)
 - Resolução espacial: ~0.4° × 0.4° (aprox. 44 km) · Resolução temporal: 3 horas
+- Horizonte de previsão: 5 dias (120 h) a partir da data de início
 
 **Novidades desta versão:**
 - Contornos municipais destacados nas animações
 - Município selecionado evidenciado em vermelho
-- Relatório automático de Campo Grande às **06h, 12h e 18h** (horário de Campo Grande)
-- Previsão sempre a partir do momento mais recente disponível no CAMS
+- Execução automática de Campo Grande às **06h, 12h e 18h** (horário de Campo Grande)
+- Apenas a data de início é necessária — o sistema busca automaticamente os 5 dias seguintes
+- Todos os leadtimes CAMS (0–120 h) são utilizados para máxima cobertura
 - Regiões com concentração < 1 μg/m³ exibidas em branco
 
 **Dados Fornecidos por:**
 - CAMS (Copernicus Atmosphere Monitoring Service) — União Europeia
 
-**Desenvolvido para:** Monitoramento da Qualidade do Ar em Mato Grosso do Sul
+**Desenvolvido para:** Sistema de Previsão da Qualidade do Ar em Mato Grosso do Sul
 """)
 
 with st.expander("Suporte e Informações Técnicas"):
@@ -1622,11 +1198,13 @@ with st.expander("Suporte e Informações Técnicas"):
     - Resolução espacial: ~0.4° × 0.4° (≈ 44 km)
     - Resolução temporal: 3 horas
     - Horizonte de previsão: até 120 h (5 dias)
-    - Relatório automático: Campo Grande às 06h, 12h e 18h (America/Campo_Grande)
+    - Leadtimes solicitados: 0, 3, 6, 9, ..., 120 h (todos disponíveis no CAMS)
+    - Execução automática: Campo Grande às 06h, 12h e 18h (America/Campo_Grande)
     - Keep-alive: ping a cada 5 minutos para manter a página ativa
 
     **Vantagens das Previsões CAMS:**
     - Calibração contínua com estações de superfície globais
     - Validação internacional rigorosa
     - Cobertura espacial completa para toda a região
+    - Horizonte de previsão de 5 dias completos sem truncamento
     """)

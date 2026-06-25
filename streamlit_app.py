@@ -956,7 +956,7 @@ if st.button("Gerar Previsão de Qualidade do Ar", type="primary", use_container
                 st.markdown("### Evolução Temporal - PM2.5 (Previsto CAMS)")
                 if os.path.exists(results['animation_pm25']):
                     st.image(results['animation_pm25'],
-                             caption=f"Previsão temporal do PM2.5 em {city} ({start_date} a {end_date_auto.date()})")
+                             caption=f"Previsão temporal do PM2.5 em {city} ({start_date} a {end_date_auto})")
                     with open(results['animation_pm25'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM2.5 (GIF)",
@@ -968,7 +968,7 @@ if st.button("Gerar Previsão de Qualidade do Ar", type="primary", use_container
                 if results['animation_pm10'] and os.path.exists(results['animation_pm10']):
                     st.markdown("### Evolução Temporal - PM10 (Previsto CAMS)")
                     st.image(results['animation_pm10'],
-                             caption=f"Previsão temporal do PM10 em {city} ({start_date} a {end_date_auto.date()})")
+                             caption=f"Previsão temporal do PM10 em {city} ({start_date} a {end_date_auto})")
                     with open(results['animation_pm10'], "rb") as file:
                         st.download_button(
                             label="Baixar Animação PM10 (GIF)",

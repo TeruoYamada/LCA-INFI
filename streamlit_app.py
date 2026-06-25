@@ -103,8 +103,9 @@ def create_pm_animation(ds, pm_var, city, lat_center, lon_center, ms_shapes, sta
         vmax = min(300, vmax_raw + 15)
         colormap_name = 'Oranges'
 
+    # matplotlib 3.7+: plt.colormaps substitui a API antiga
     import copy
-    cmap_obj = plt.cm.get_cmap(colormap_name).copy()
+    cmap_obj = copy.copy(plt.colormaps[colormap_name])
     cmap_obj.set_under('white')
 
     ms_extent = [-58.5, -50.5, -24.5, -17.0]

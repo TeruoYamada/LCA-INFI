@@ -305,6 +305,11 @@ def calculate_aqi(pm25, pm10):
 # predict_future_values — sem truncamento por data final
 # A previsão CAMS já cobre 5 dias (120 h) a partir da data inicial;
 # não faz sentido cortar por end_date, pois só existe start_date agora.
+#
+# IMPORTANTE: esta função é usada SOMENTE para os gráficos de série temporal
+# na aba "Análise do Município" (onde apenas a parte 'historical', ou seja,
+# os dados reais do CAMS, é efetivamente plotada). Ela NÃO deve ser usada
+# para o ranking estadual de qualidade do ar — ver analyze_all_cities abaixo.
 # ══════════════════════════════════════════════════════════════════════════════
 def predict_future_values(df, days=5):
     """
@@ -378,7 +383,18 @@ def predict_future_values(df, days=5):
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
+# ══════════════════════════════════════════════════════════════════════════════
+# analyze_all_cities — CORRIGIDO
+# Antes: chamava predict_future_values() e usava apenas a parte 'forecast',
+# que é uma REGRESSÃO LINEAR extrapolando +5 dias ALÉM do último dado real
+# do CAMS. Isso fazia o ranking mostrar valores de até 10 dias no futuro.
+#
+# Agora: usa diretamente a série real do CAMS (df_timeseries), que já cobre
+# a janela pedida (start_date até start_date + 5 dias / 120h), e aplica um
+# corte de segurança por `cutoff_date` para garantir que nenhum ponto além
+# dessa janela seja considerado.
+# ══════════════════════════════════════════════════════════════════════════════
+def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict, cutoff_date=None):
     cities_results = []
     progress_bar = st.progress(0)
     status_text  = st.empty()
@@ -390,21 +406,20 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
         lat, lon = coords
         df_timeseries = extract_pm_timeseries(ds, lat, lon, pm25_var, pm10_var)
 
-        if not df_timeseries.empty:
-            # Sem max_date — pega tudo o que o CAMS forneceu
-            df_forecast  = predict_future_values(df_timeseries, days=5)
-            forecast_only = df_forecast[df_forecast['type'] == 'forecast']
+        # Corte de segurança: nunca considerar pontos além de start_date + 5 dias
+        if cutoff_date is not None and not df_timeseries.empty:
+            df_timeseries = df_timeseries[df_timeseries['time'] <= cutoff_date]
 
-            if not forecast_only.empty:
-                max_day_idx = forecast_only['aqi'].idxmax()
-                cities_results.append({
-                    'cidade':    city_name,
-                    'pm25_max':  forecast_only['pm25'].max(),
-                    'pm10_max':  forecast_only['pm10'].max(),
-                    'aqi_max':   forecast_only['aqi'].max(),
-                    'data_max':  forecast_only.loc[max_day_idx, 'time'],
-                    'categoria': forecast_only.loc[max_day_idx, 'aqi_category']
-                })
+        if not df_timeseries.empty:
+            max_idx = df_timeseries['aqi'].idxmax()
+            cities_results.append({
+                'cidade':    city_name,
+                'pm25_max':  df_timeseries['pm25'].max(),
+                'pm10_max':  df_timeseries['pm10'].max(),
+                'aqi_max':   df_timeseries['aqi'].max(),
+                'data_max':  df_timeseries.loc[max_idx, 'time'],
+                'categoria': df_timeseries.loc[max_idx, 'aqi_category']
+            })
 
     progress_bar.empty()
     status_text.empty()
@@ -422,6 +437,7 @@ def analyze_all_cities(ds, pm25_var, pm10_var, cities_dict):
         return df_results
     else:
         return pd.DataFrame(columns=['cidade', 'pm25_max', 'pm10_max', 'aqi_max', 'data_max', 'categoria'])
+# ══════════════════════════════════════════════════════════════════════════════
 
 
 def get_aqi_color(aqi_value):
@@ -516,6 +532,8 @@ def keep_alive():
 # ══════════════════════════════════════════════════════════════════════════════
 # scheduled_report_campo_grande — e-mail desativado, mantém apenas a lógica
 # de geração de dados e log para eventual reativação futura.
+# CORRIGIDO: o ranking estadual não usa mais predict_future_values(); usa
+# diretamente a série real do CAMS, cortada em start_auto + 5 dias.
 # ══════════════════════════════════════════════════════════════════════════════
 def scheduled_report_campo_grande():
     """
@@ -585,25 +603,28 @@ def scheduled_report_campo_grande():
             elif max_val > 1000:
                 ds[var] = ds[var] / 1000
 
+        # ── Ranking estadual (CORRIGIDO) ──────────────────────────────────
+        # Usa a série real do CAMS (extract_pm_timeseries), cortada em
+        # start_auto + 5 dias. NÃO usa mais predict_future_values() aqui.
         top_df = pd.DataFrame(columns=["cidade", "pm25_max", "pm10_max", "aqi_max", "data_max", "categoria"])
         try:
+            cutoff_auto = pd.Timestamp(start_auto) + pd.Timedelta(days=5)
             results_list = []
             for city_name, coords in cities.items():
                 lat_c, lon_c = coords
                 df_c = extract_pm_timeseries(ds, lat_c, lon_c, pm25_var, pm10_var)
                 if not df_c.empty:
-                    df_fc   = predict_future_values(df_c, days=5)
-                    fc_only = df_fc[df_fc["type"] == "forecast"]
-                    if not fc_only.empty:
-                        idx_mx = fc_only["aqi"].idxmax()
-                        results_list.append({
-                            "cidade":    city_name,
-                            "pm25_max":  round(float(fc_only["pm25"].max()), 1),
-                            "pm10_max":  round(float(fc_only["pm10"].max()), 1),
-                            "aqi_max":   round(float(fc_only["aqi"].max()),  0),
-                            "data_max":  fc_only.loc[idx_mx, "time"],
-                            "categoria": fc_only.loc[idx_mx, "aqi_category"],
-                        })
+                    df_c = df_c[df_c['time'] <= cutoff_auto]
+                if not df_c.empty:
+                    idx_mx = df_c["aqi"].idxmax()
+                    results_list.append({
+                        "cidade":    city_name,
+                        "pm25_max":  round(float(df_c["pm25"].max()), 1),
+                        "pm10_max":  round(float(df_c["pm10"].max()), 1),
+                        "aqi_max":   round(float(df_c["aqi"].max()),  0),
+                        "data_max":  df_c.loc[idx_mx, "time"],
+                        "categoria": df_c.loc[idx_mx, "aqi_category"],
+                    })
             if results_list:
                 top_df = (
                     pd.DataFrame(results_list)
@@ -613,6 +634,7 @@ def scheduled_report_campo_grande():
                 top_df["data_max"] = top_df["data_max"].dt.strftime("%d/%m/%Y %H:%M")
         except Exception as e_rank:
             print(f"[Scheduler] Erro no ranking estadual: {e_rank}")
+        # ────────────────────────────────────────────────────────────────
 
         ms_shapes_sched = load_ms_municipalities()
 
@@ -826,8 +848,12 @@ def generate_pm_analysis():
                     ds[var] = ds[var] / 1000
 
             with st.spinner("Analisando qualidade do ar em todos os municípios de MS..."):
-                # Sem end_date — usa tudo o que o CAMS forneceu
-                top_pollution_cities = analyze_all_cities(ds, pm25_var, pm10_var, cities)
+                # CORRIGIDO: ranking usa dados reais do CAMS, cortados em
+                # start_date + 5 dias (sem extrapolação por regressão linear)
+                cutoff = pd.Timestamp(start_date) + pd.Timedelta(days=5)
+                top_pollution_cities = analyze_all_cities(
+                    ds, pm25_var, pm10_var, cities, cutoff_date=cutoff
+                )
         except Exception as e:
             st.warning(f"Não foi possível analisar todas as cidades: {str(e)}")
             top_pollution_cities = pd.DataFrame(
@@ -1184,6 +1210,8 @@ st.markdown("""
 - Apenas a data de início é necessária — o sistema busca automaticamente os 5 dias seguintes
 - Todos os leadtimes CAMS (0–120 h) são utilizados para máxima cobertura
 - Regiões com concentração < 1 μg/m³ exibidas em branco
+- Ranking estadual de qualidade do ar restrito à janela real de 5 dias do CAMS
+  (sem extrapolação por regressão linear além do horizonte solicitado)
 
 **Dados Fornecidos por:**
 - CAMS (Copernicus Atmosphere Monitoring Service) — União Europeia
